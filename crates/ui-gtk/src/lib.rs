@@ -1,6 +1,7 @@
 //! GTK composition for three-column local filesystem navigation.
 
 mod directory_pane;
+mod preview_pane;
 
 use std::{
     cell::RefCell,
@@ -13,13 +14,14 @@ use gtk::{gdk, gio, glib, prelude::*};
 use pathpilot_core::{
     AppCommand, FileEntry, FileKind, KeyResult, KeySequenceParser, Location, NavigationState,
 };
+use preview_pane::PreviewPane;
 use tracing::{debug, info, info_span, warn};
 
 struct Browser {
     navigation: RefCell<NavigationState>,
     parent: DirectoryPane,
     current: DirectoryPane,
-    preview: DirectoryPane,
+    preview: PreviewPane,
     location_label: gtk::Label,
     status: gtk::Label,
 }
@@ -30,7 +32,7 @@ impl Browser {
             navigation: RefCell::new(NavigationState::new(initial)),
             parent: DirectoryPane::new("Parent"),
             current: DirectoryPane::new("Current"),
-            preview: DirectoryPane::new("Preview"),
+            preview: PreviewPane::new(),
             location_label: gtk::Label::builder()
                 .xalign(0.0)
                 .ellipsize(gtk::pango::EllipsizeMode::Middle)
@@ -62,7 +64,6 @@ impl Browser {
 
         connect_activation(&self.current, Rc::downgrade(self));
         connect_activation(&self.parent, Rc::downgrade(self));
-        connect_activation(&self.preview, Rc::downgrade(self));
     }
 
     fn initial_load(self: &Rc<Self>) {
@@ -73,7 +74,7 @@ impl Browser {
         let total = self.current.selection.n_items();
         if selected == gtk::INVALID_LIST_POSITION {
             self.status.set_label("NORMAL  No selection");
-            self.preview.show_message("Preview", "No selection");
+            self.preview.show_empty();
             return;
         }
         self.status.set_label(&format!(
@@ -85,25 +86,16 @@ impl Browser {
 
     fn update_preview(self: &Rc<Self>) {
         let Some(entry) = self.current.selected_entry() else {
-            self.preview.show_message("Preview", "No selection");
+            self.preview.show_empty();
             return;
         };
-        if entry.kind == FileKind::Directory {
-            self.preview.load(&entry.location, |_| {});
-        } else {
-            self.preview.show_message(
-                &entry.display_name,
-                &format!(
-                    "{} · {} · {}",
-                    kind_label(entry.kind),
-                    format_size(entry.size),
-                    entry.content_type.as_deref().unwrap_or("unknown type")
-                ),
-            );
-        }
+        self.preview.schedule(entry);
     }
 
-    fn dispatch(self: &Rc<Self>, command: AppCommand) {
+    fn dispatch(self: &Rc<Self>, command: AppCommand) -> bool {
+        if command == AppCommand::Quit {
+            return true;
+        }
         match command {
             AppCommand::NavigateUp => self.move_cursor(-1),
             AppCommand::NavigateDown => self.move_cursor(1),
@@ -120,7 +112,9 @@ impl Browser {
                 }
             }
             AppCommand::GoParent => self.go_parent(),
+            AppCommand::Quit => unreachable!("quit handled before navigation dispatch"),
         }
+        false
     }
 
     fn move_cursor(&self, offset: i32) {
@@ -221,7 +215,7 @@ impl Browser {
         } else {
             self.parent.show_message("Parent", "Filesystem root");
         }
-        self.preview.show_message("Preview", "Loading selection…");
+        self.preview.show_empty();
         info!(location = location.uri(), "navigation started");
     }
 
@@ -240,7 +234,7 @@ pub fn build_window(app: &gtk::Application) -> gtk::ApplicationWindow {
 
     let window = gtk::ApplicationWindow::builder()
         .application(app)
-        .title("PathPilot — Three-Column Navigation")
+        .title("PathPilot — Preview Prototype")
         .default_width(1400)
         .default_height(760)
         .build();
@@ -302,6 +296,7 @@ fn connect_activation(pane: &DirectoryPane, browser: Weak<Browser>) {
 fn install_keyboard_controller(window: &gtk::ApplicationWindow, browser: Weak<Browser>) {
     let parser = Rc::new(RefCell::new(KeySequenceParser::default()));
     let controller = gtk::EventControllerKey::new();
+    let weak_window = window.downgrade();
     controller.connect_key_pressed(move |_, key, _, modifiers| {
         if modifiers.intersects(
             gdk::ModifierType::CONTROL_MASK
@@ -318,7 +313,11 @@ fn install_keyboard_controller(window: &gtk::ApplicationWindow, browser: Weak<Br
             KeyResult::Command(command) => {
                 if let Some(browser) = browser.upgrade() {
                     debug!(?command, "dispatching keyboard command");
-                    browser.dispatch(command);
+                    if browser.dispatch(command)
+                        && let Some(window) = weak_window.upgrade()
+                    {
+                        window.close();
+                    }
                 }
                 glib::Propagation::Stop
             }
@@ -327,21 +326,4 @@ fn install_keyboard_controller(window: &gtk::ApplicationWindow, browser: Weak<Br
         }
     });
     window.add_controller(controller);
-}
-
-fn kind_label(kind: FileKind) -> &'static str {
-    match kind {
-        FileKind::Directory => "folder",
-        FileKind::Regular => "file",
-        FileKind::Symlink => "symbolic link",
-        FileKind::Special => "special file",
-        FileKind::Unknown => "unknown",
-    }
-}
-
-fn format_size(size: Option<u64>) -> String {
-    size.map_or_else(
-        || "unknown size".to_owned(),
-        |bytes| format!("{bytes} bytes"),
-    )
 }

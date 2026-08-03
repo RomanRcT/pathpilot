@@ -6,6 +6,7 @@
       <sourceFolder url="file://$MODULE_DIR$/crates/app/src" isTestSource="false" />
       <sourceFolder url="file://$MODULE_DIR$/crates/core/src" isTestSource="false" />
       <sourceFolder url="file://$MODULE_DIR$/crates/fs-local/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/preview/src" isTestSource="false" />
       <sourceFolder url="file://$MODULE_DIR$/crates/ui-gtk/src" isTestSource="false" />
       <sourceFolder url="file://$MODULE_DIR$/src" isTestSource="false" />
       <excludeFolder url="file://$MODULE_DIR$/target" />

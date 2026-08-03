@@ -551,6 +551,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "pathpilot-preview"
+version = "0.1.0"
+dependencies = [
+ "gdk-pixbuf",
+ "gio",
+ "glib",
+ "pathpilot-core",
+ "tempfile",
+ "tracing",
+]
+
+[[package]]
 name = "pathpilot-ui-gtk"
 version = "0.1.0"
 dependencies = [
@@ -559,6 +571,7 @@ dependencies = [
  "gtk4",
  "pathpilot-core",
  "pathpilot-fs-local",
+ "pathpilot-preview",
  "tracing",
 ]
 

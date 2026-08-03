@@ -122,6 +122,7 @@ pub enum AppCommand {
     GoParent,
     GoFirst,
     GoLast,
+    Quit,
 }
 
 /// Result of feeding a key to the normal-mode parser.
@@ -166,6 +167,7 @@ impl KeySequenceParser {
             'k' => KeyResult::Command(AppCommand::NavigateUp),
             'l' => KeyResult::Command(AppCommand::Enter),
             'h' => KeyResult::Command(AppCommand::GoParent),
+            'q' => KeyResult::Command(AppCommand::Quit),
             'G' => KeyResult::Command(AppCommand::GoLast),
             'g' => {
                 self.pending_g = Some(now);
@@ -262,6 +264,7 @@ mod tests {
             KeyResult::Command(AppCommand::GoParent)
         );
         assert_eq!(parser.feed('l', now), KeyResult::Command(AppCommand::Enter));
+        assert_eq!(parser.feed('q', now), KeyResult::Command(AppCommand::Quit));
     }
 
     #[test]

@@ -11,7 +11,11 @@ PathPilot is an experimental keyboard-first graphical file manager for Linux. Th
 - Name, native content-type icon, kind, size, and modified-time columns.
 - Case-insensitive name sorting with directories first.
 - `h/j/k/l`, `gg`, and `G` navigation with cursor restoration per directory.
+- `q` closes the current window.
 - Single-click selection and double-click directory/file opening.
+- Preview requests are debounced by 75 ms, cancelable, and generation-checked.
+- Bounded text previews and asynchronously decoded, viewport-scaled image previews.
+- Empty files have an explicit empty state; YAML MIME variants are treated as text.
 - Normal-mode navigation with `j`, `k`, `gg`, and `G`.
 - A status line with the selected index and entry count.
 - Structured startup, model creation, and selection tracing.
