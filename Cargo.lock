@@ -660,6 +660,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "pathpilot-operations"
+version = "0.1.0"
+dependencies = [
+ "gio",
+ "glib",
+ "pathpilot-core",
+ "tempfile",
+ "tracing",
+]
+
+[[package]]
 name = "pathpilot-preview"
 version = "0.1.0"
 dependencies = [
@@ -682,6 +693,7 @@ dependencies = [
  "gtk4",
  "pathpilot-core",
  "pathpilot-fs-local",
+ "pathpilot-operations",
  "pathpilot-preview",
  "tracing",
 ]

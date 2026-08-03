@@ -4,7 +4,7 @@ mod directory_pane;
 mod preview_pane;
 
 use std::{
-    cell::RefCell,
+    cell::{Cell, RefCell},
     rc::{Rc, Weak},
     time::Instant,
 };
@@ -12,8 +12,10 @@ use std::{
 use directory_pane::DirectoryPane;
 use gtk::{gdk, gio, glib, prelude::*};
 use pathpilot_core::{
-    AppCommand, FileEntry, FileKind, KeyResult, KeySequenceParser, Location, NavigationState,
+    AppCommand, COMMAND_REFERENCE, FileEntry, FileKind, KeyResult, KeySequenceParser, Location,
+    NavigationState, OperationId,
 };
+use pathpilot_operations::{OperationResult, create_directory, create_file, rename, trash};
 use preview_pane::PreviewPane;
 use tracing::{debug, info, info_span, warn};
 
@@ -24,6 +26,7 @@ struct Browser {
     preview: PreviewPane,
     location_label: gtk::Label,
     status: gtk::Label,
+    next_operation_id: Cell<u64>,
 }
 
 impl Browser {
@@ -49,6 +52,7 @@ impl Browser {
                 .margin_top(6)
                 .margin_bottom(6)
                 .build(),
+            next_operation_id: Cell::new(1),
         })
     }
 
@@ -92,7 +96,7 @@ impl Browser {
         self.preview.schedule(entry);
     }
 
-    fn dispatch(self: &Rc<Self>, command: AppCommand) -> bool {
+    fn dispatch(self: &Rc<Self>, command: AppCommand, window: &gtk::ApplicationWindow) -> bool {
         if command == AppCommand::Quit {
             return true;
         }
@@ -112,9 +116,112 @@ impl Browser {
                 }
             }
             AppCommand::GoParent => self.go_parent(),
+            AppCommand::CreateFile => self.prompt_create(window, false),
+            AppCommand::CreateDirectory => self.prompt_create(window, true),
+            AppCommand::Rename => self.prompt_rename(window),
+            AppCommand::Trash => self.confirm_trash(window),
             AppCommand::Quit => unreachable!("quit handled before navigation dispatch"),
         }
         false
+    }
+
+    fn operation_id(&self) -> OperationId {
+        let value = self.next_operation_id.get();
+        self.next_operation_id.set(value.wrapping_add(1));
+        OperationId::new(value)
+    }
+
+    fn prompt_create(self: &Rc<Self>, window: &gtk::ApplicationWindow, directory: bool) {
+        let title = if directory {
+            "Create Directory"
+        } else {
+            "Create File"
+        };
+        let weak = Rc::downgrade(self);
+        prompt_name(window, title, "", move |name| {
+            let Some(browser) = weak.upgrade() else {
+                return;
+            };
+            let parent = browser.navigation.borrow().current().clone();
+            let id = browser.operation_id();
+            let callback_browser = Rc::downgrade(&browser);
+            let callback = move |result| {
+                if let Some(browser) = callback_browser.upgrade() {
+                    browser.operation_finished(result);
+                }
+            };
+            if directory {
+                create_directory(id, &parent, &name, callback);
+            } else {
+                create_file(id, &parent, &name, callback);
+            }
+        });
+    }
+
+    fn prompt_rename(self: &Rc<Self>, window: &gtk::ApplicationWindow) {
+        let Some(entry) = self.current.selected_entry() else {
+            return;
+        };
+        let initial = entry.display_name.clone();
+        let weak = Rc::downgrade(self);
+        prompt_name(window, "Rename", &initial, move |name| {
+            let Some(browser) = weak.upgrade() else {
+                return;
+            };
+            let callback_browser = Rc::downgrade(&browser);
+            rename(
+                browser.operation_id(),
+                &entry.location,
+                &name,
+                move |result| {
+                    if let Some(browser) = callback_browser.upgrade() {
+                        browser.operation_finished(result);
+                    }
+                },
+            );
+        });
+    }
+
+    #[allow(deprecated)]
+    fn confirm_trash(self: &Rc<Self>, window: &gtk::ApplicationWindow) {
+        let Some(entry) = self.current.selected_entry() else {
+            return;
+        };
+        let dialog = gtk::MessageDialog::builder()
+            .transient_for(window)
+            .modal(true)
+            .message_type(gtk::MessageType::Warning)
+            .buttons(gtk::ButtonsType::OkCancel)
+            .text("Move item to Trash?")
+            .secondary_text(&entry.display_name)
+            .build();
+        let weak = Rc::downgrade(self);
+        dialog.connect_response(move |dialog, response| {
+            if response == gtk::ResponseType::Ok
+                && let Some(browser) = weak.upgrade()
+            {
+                let callback_browser = Rc::downgrade(&browser);
+                trash(browser.operation_id(), &entry.location, move |result| {
+                    if let Some(browser) = callback_browser.upgrade() {
+                        browser.operation_finished(result);
+                    }
+                });
+            }
+            dialog.close();
+        });
+        dialog.present();
+    }
+
+    fn operation_finished(self: &Rc<Self>, result: OperationResult) {
+        match result.result {
+            Ok(()) => {
+                self.status.set_label("NORMAL  Operation completed");
+                self.reload_columns(result.resulting_location, None);
+            }
+            Err(error) => self
+                .status
+                .set_label(&format!("NORMAL  Operation failed: {}", error.message)),
+        }
     }
 
     fn move_cursor(&self, offset: i32) {
@@ -245,10 +352,23 @@ pub fn build_window(app: &gtk::Application) -> gtk::ApplicationWindow {
     root.append(&columns);
     root.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
     root.append(&browser.status);
-    window.set_child(Some(&root));
+    let overlay = gtk::Overlay::new();
+    overlay.set_child(Some(&root));
+    let key_hints = gtk::Grid::builder()
+        .halign(gtk::Align::Center)
+        .valign(gtk::Align::End)
+        .margin_bottom(42)
+        .column_spacing(12)
+        .row_spacing(6)
+        .visible(false)
+        .build();
+    key_hints.add_css_class("key-hint-overlay");
+    overlay.add_overlay(&key_hints);
+    install_hint_css();
+    window.set_child(Some(&overlay));
 
     browser.connect();
-    install_keyboard_controller(&window, Rc::downgrade(&browser));
+    install_keyboard_controller(&window, Rc::downgrade(&browser), &key_hints);
     let close_browser = browser.clone();
     window.connect_close_request(move |_| {
         close_browser.cancel();
@@ -293,11 +413,26 @@ fn connect_activation(pane: &DirectoryPane, browser: Weak<Browser>) {
     });
 }
 
-fn install_keyboard_controller(window: &gtk::ApplicationWindow, browser: Weak<Browser>) {
+fn install_keyboard_controller(
+    window: &gtk::ApplicationWindow,
+    browser: Weak<Browser>,
+    key_hints: &gtk::Grid,
+) {
     let parser = Rc::new(RefCell::new(KeySequenceParser::default()));
+    let hints_enabled = Rc::new(Cell::new(false));
     let controller = gtk::EventControllerKey::new();
     let weak_window = window.downgrade();
+    let key_hints = key_hints.clone();
     controller.connect_key_pressed(move |_, key, _, modifiers| {
+        if key == gdk::Key::Escape {
+            parser.borrow_mut().reset();
+            if hints_enabled.get() {
+                show_command_reference(&key_hints);
+            } else {
+                key_hints.set_visible(false);
+            }
+            return glib::Propagation::Stop;
+        }
         if modifiers.intersects(
             gdk::ModifierType::CONTROL_MASK
                 | gdk::ModifierType::ALT_MASK
@@ -306,24 +441,142 @@ fn install_keyboard_controller(window: &gtk::ApplicationWindow, browser: Weak<Br
             return glib::Propagation::Proceed;
         }
 
-        let Some(character) = key.to_unicode() else {
-            return glib::Propagation::Proceed;
+        if key == gdk::Key::F1 {
+            parser.borrow_mut().reset();
+            let enabled = !hints_enabled.get();
+            hints_enabled.set(enabled);
+            if enabled {
+                show_command_reference(&key_hints);
+            }
+            key_hints.set_visible(enabled);
+            return glib::Propagation::Stop;
+        }
+
+        let key_result = match key {
+            gdk::Key::F2 => KeyResult::Command(AppCommand::Rename),
+            gdk::Key::Delete => KeyResult::Command(AppCommand::Trash),
+            _ => {
+                let Some(character) = key.to_unicode() else {
+                    return glib::Propagation::Proceed;
+                };
+                parser.borrow_mut().feed(character, Instant::now())
+            }
         };
-        match parser.borrow_mut().feed(character, Instant::now()) {
+        match key_result {
             KeyResult::Command(command) => {
+                if hints_enabled.get() {
+                    show_command_reference(&key_hints);
+                } else {
+                    key_hints.set_visible(false);
+                }
                 if let Some(browser) = browser.upgrade() {
                     debug!(?command, "dispatching keyboard command");
-                    if browser.dispatch(command)
-                        && let Some(window) = weak_window.upgrade()
-                    {
-                        window.close();
+                    if let Some(window) = weak_window.upgrade() {
+                        if browser.dispatch(command, &window) {
+                            window.close();
+                        }
                     }
                 }
                 glib::Propagation::Stop
             }
-            KeyResult::Pending => glib::Propagation::Stop,
+            KeyResult::Pending(pending) => {
+                if hints_enabled.get() {
+                    populate_hint_grid(
+                        &key_hints,
+                        pending
+                            .hints
+                            .iter()
+                            .map(|hint| (hint.key.to_string(), hint.label)),
+                    );
+                    key_hints.set_visible(true);
+                }
+                glib::Propagation::Stop
+            }
             KeyResult::Ignored => glib::Propagation::Proceed,
         }
     });
     window.add_controller(controller);
+}
+
+fn show_command_reference(grid: &gtk::Grid) {
+    populate_hint_grid(
+        grid,
+        COMMAND_REFERENCE
+            .iter()
+            .map(|hint| (hint.keys.to_owned(), hint.label)),
+    );
+    grid.set_visible(true);
+}
+
+fn populate_hint_grid<'a>(grid: &gtk::Grid, hints: impl IntoIterator<Item = (String, &'a str)>) {
+    while let Some(child) = grid.first_child() {
+        grid.remove(&child);
+    }
+    for (index, (keys, label)) in hints.into_iter().enumerate() {
+        let group = (index % 3) as i32;
+        let row = (index / 3) as i32;
+        let key = gtk::Label::builder()
+            .label(keys)
+            .xalign(1.0)
+            .width_chars(10)
+            .build();
+        key.add_css_class("key-hint-key");
+        let description = gtk::Label::builder()
+            .label(label)
+            .xalign(0.0)
+            .width_chars(16)
+            .build();
+        grid.attach(&key, group * 2, row, 1, 1);
+        grid.attach(&description, group * 2 + 1, row, 1, 1);
+    }
+}
+
+#[allow(deprecated)]
+fn prompt_name(
+    window: &gtk::ApplicationWindow,
+    title: &str,
+    initial: &str,
+    on_accept: impl Fn(String) + 'static,
+) {
+    let dialog = gtk::Dialog::builder()
+        .transient_for(window)
+        .modal(true)
+        .title(title)
+        .build();
+    dialog.add_button("Cancel", gtk::ResponseType::Cancel);
+    dialog.add_button("OK", gtk::ResponseType::Accept);
+    dialog.set_default_response(gtk::ResponseType::Accept);
+    let entry = gtk::Entry::builder()
+        .text(initial)
+        .activates_default(true)
+        .margin_start(12)
+        .margin_end(12)
+        .margin_top(12)
+        .margin_bottom(12)
+        .build();
+    dialog.content_area().append(&entry);
+    let response_entry = entry.clone();
+    dialog.connect_response(move |dialog, response| {
+        if response == gtk::ResponseType::Accept {
+            on_accept(response_entry.text().to_string());
+        }
+        dialog.close();
+    });
+    dialog.present();
+    entry.grab_focus();
+    entry.select_region(0, -1);
+}
+
+fn install_hint_css() {
+    let provider = gtk::CssProvider::new();
+    provider.load_from_string(
+        ".key-hint-overlay { background-color: alpha(@window_bg_color, 0.90); border-radius: 10px; padding: 10px 16px; box-shadow: 0 3px 12px alpha(black, 0.35); } .key-hint-key { font-family: monospace; font-weight: bold; color: @accent_color; }",
+    );
+    if let Some(display) = gdk::Display::default() {
+        gtk::style_context_add_provider_for_display(
+            &display,
+            &provider,
+            gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
+        );
+    }
 }

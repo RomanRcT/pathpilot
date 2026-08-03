@@ -1,0 +1,37 @@
+# Phase 3: file operations foundation
+
+The first Phase 3 slice establishes a GTK-independent operation model, cancelable GIO primitives, and keyboard-driven GTK entry points for the initial operations.
+
+## Implemented primitives
+
+- create an empty file;
+- create a directory;
+- rename a file or directory;
+- move an item to the FreeDesktop trash through GIO.
+
+Every operation has an `OperationId`, typed `OperationKind`, state, progress fields, a `gio::Cancellable`, and a structured result. Common GIO failures are classified as already exists, permission denied, not found, cancelled, or other.
+
+## Safety properties
+
+- File creation uses `FileCreateFlags::NONE` and never overwrites an existing item.
+- Names are validated before I/O; empty names, path separators, `.` and `..` are rejected.
+- Trash uses the desktop's GIO implementation rather than a private trash directory.
+- The operation layer contains no GTK widgets and reports completion through typed callbacks.
+- Moving an item to trash always requires confirmation.
+
+## Keyboard interface
+
+- `a f` creates a file;
+- `a d` creates a directory;
+- `r` or `F2` renames the selected item;
+- `d d` or `Delete` moves the selected item to trash after confirmation.
+
+`F1` toggles a persistent, column-aligned reference containing the top-level commands. Pressing a sequence prefix replaces it with the valid continuations for that prefix, and completing or cancelling the sequence restores the main reference. The semi-transparent foreground hint does not consume layout space or disappear on a timer.
+
+## Verification
+
+Temporary-filesystem integration tests create and rename a file, verify that conflicts do not overwrite existing data, and reject path traversal before filesystem access.
+
+## Next slice
+
+Copy and move jobs will add progress reporting and explicit conflict policies.

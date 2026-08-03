@@ -4,6 +4,7 @@ members = [
     "crates/app",
     "crates/core",
     "crates/fs-local",
+    "crates/operations",
     "crates/preview",
     "crates/ui-gtk",
 ]
@@ -21,6 +22,7 @@ glib = "0.21"
 gtk = { package = "gtk4", version = "0.10", features = ["v4_12"] }
 pathpilot-core = { path = "crates/core" }
 pathpilot-fs-local = { path = "crates/fs-local" }
+pathpilot-operations = { path = "crates/operations" }
 pathpilot-preview = { path = "crates/preview" }
 pathpilot-ui-gtk = { path = "crates/ui-gtk" }
 tracing = "0.1"
