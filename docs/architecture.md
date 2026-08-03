@@ -15,3 +15,5 @@ The current directory uses `GListStore`, `GtkSortListModel`, `GtkSingleSelection
 Each of the parent, current, and preview columns owns a persistent `DirectoryPane`. Navigation changes only their list models and labels; it does not rebuild the window or row factories. `NavigationState` remains GTK-independent and stores the last cursor position for each visited URI.
 
 The preview column is a `GtkStack`: directory selections use an embedded `DirectoryPane`, while text, image, metadata, and error results use specialized views. Selection changes immediately update metadata, invalidate the prior preview generation, and schedule expensive work after a 75 ms debounce.
+
+Bounded text is processed in a worker thread. `syntect` returns character-offset style spans and `pulldown-cmark` returns semantic Markdown spans; neither crate creates GTK objects. The main thread converts those typed spans into `GtkTextTag` values. Completed file previews enter a 24-entry LRU keyed by URI, size, and modification time.

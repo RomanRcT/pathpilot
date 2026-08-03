@@ -10,6 +10,8 @@ gdk-pixbuf.workspace = true
 gio.workspace = true
 glib.workspace = true
 pathpilot-core.workspace = true
+pulldown-cmark.workspace = true
+syntect.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]

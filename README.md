@@ -16,6 +16,9 @@ PathPilot is an experimental keyboard-first graphical file manager for Linux. Th
 - Preview requests are debounced by 75 ms, cancelable, and generation-checked.
 - Bounded text previews and asynchronously decoded, viewport-scaled image previews.
 - Empty files have an explicit empty state; YAML MIME variants are treated as text.
+- Source previews are syntax-highlighted off the GTK thread with `syntect`.
+- Markdown headings, emphasis, lists, tables, links, and code are rendered without executing HTML or loading remote content.
+- A 24-entry LRU preview cache is invalidated by URI, size, and modification time.
 - Normal-mode navigation with `j`, `k`, `gg`, and `G`.
 - A status line with the selected index and entry count.
 - Structured startup, model creation, and selection tracing.

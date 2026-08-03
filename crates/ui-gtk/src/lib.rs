@@ -78,7 +78,7 @@ impl Browser {
             return;
         }
         self.status.set_label(&format!(
-            "NORMAL  Selected: {} / {total}  h/j/k/l navigate",
+            "NORMAL  Selected: {} / {total}  h/j/k/l navigate · q quit",
             selected + 1
         ));
         self.update_preview();

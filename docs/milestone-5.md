@@ -18,6 +18,12 @@ Text and common source-code MIME types are read through `GInputStream::read_byte
 
 Zero-byte files bypass MIME dispatch and render an explicit empty-file state. YAML is recognized through `text/yaml`, `application/yaml`, and the legacy `application/x-yaml` MIME type.
 
+Source files are highlighted with `syntect` 5.3 using its Rust-only regex backend. Syntax and theme definitions are initialized once, while line parsing runs in a worker thread and checks cancellation between lines. GTK receives character-offset spans and applies a small reused set of text tags.
+
+### Markdown
+
+Markdown is parsed with `pulldown-cmark` 0.13 in the same worker pipeline. Headings, emphasis, strong text, lists, task markers, block quotes, links, tables, and code receive semantic GTK styling. Raw HTML is discarded, embedded content is never executed, and remote images are not loaded.
+
 ### Images
 
 Image streams are opened asynchronously and decoded with `GdkPixbuf`'s asynchronous scaled-stream API. Decoding is bounded to a 1200 × 1200 preview while preserving aspect ratio. The resulting pixbuf is converted to a GDK texture for `GtkPicture`.
@@ -26,6 +32,10 @@ Image streams are opened asynchronously and decoded with `GdkPixbuf`'s asynchron
 
 Directories retain the independently cancelable `DirectoryPane`. Unsupported types remain on the metadata view with a clear status instead of producing an error dialog.
 
+### Cache
+
+The preview pane retains up to 24 completed file previews in an LRU cache. Keys include URI, size, and modification time, so changed files cannot reuse stale text, spans, or decoded images.
+
 ## Verification
 
 - `PreviewGate` tests prove stale generations are rejected.
@@ -33,3 +43,5 @@ Directories retain the independently cancelable `DirectoryPane`. Unsupported typ
 - Existing filesystem and navigation tests continue to pass under the expanded workspace.
 
 Runtime verification on the developer Fedora workstation on 2026-08-03 presented the debug window successfully, loaded the 14-entry current and 98-entry parent models, then started the selected directory preview after the debounce interval. The preview completed without stale updates or runtime errors.
+
+The Phase 2 extension was additionally launched from the preview crate's source directory, forcing `lib.rs` through bounded asynchronous reading, worker-thread syntax highlighting, and GTK text-tag rendering. The window and highlighted preview remained stable without main-thread errors.
