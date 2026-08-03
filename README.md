@@ -48,3 +48,7 @@ cargo test --workspace
 ```
 
 GTK 4 applications require a graphical session. PathPilot targets Wayland first but can also use another GDK backend supported by the local GTK installation.
+
+## License
+
+PathPilot is free software distributed under the [GNU General Public License v3.0 or later](LICENSE).
