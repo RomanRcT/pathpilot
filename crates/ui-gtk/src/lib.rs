@@ -12,8 +12,8 @@ use std::{
 use directory_pane::DirectoryPane;
 use gtk::{gdk, gio, glib, prelude::*};
 use pathpilot_core::{
-    AppCommand, COMMAND_REFERENCE, FileEntry, FileKind, KeyResult, KeySequenceParser, Location,
-    NavigationState, OperationId,
+    AppCommand, COMMAND_REFERENCE, FileEntry, FileKind, FilenameFind, KeyResult, KeySequenceParser,
+    Location, NavigationState, OperationId,
 };
 use pathpilot_operations::{OperationResult, create_directory, create_file, rename, trash};
 use preview_pane::PreviewPane;
@@ -27,6 +27,7 @@ struct Browser {
     location_label: gtk::Label,
     status: gtk::Label,
     next_operation_id: Cell<u64>,
+    find: RefCell<FilenameFind>,
 }
 
 impl Browser {
@@ -53,6 +54,7 @@ impl Browser {
                 .margin_bottom(6)
                 .build(),
             next_operation_id: Cell::new(1),
+            find: RefCell::new(FilenameFind::default()),
         })
     }
 
@@ -129,6 +131,60 @@ impl Browser {
         let value = self.next_operation_id.get();
         self.next_operation_id.set(value.wrapping_add(1));
         OperationId::new(value)
+    }
+
+    fn start_find(&self) {
+        let position = self.current.selection.selected();
+        let position = if position == gtk::INVALID_LIST_POSITION {
+            0
+        } else {
+            position
+        };
+        self.find.borrow_mut().start(position);
+        self.status.set_label("FIND  Type a filename");
+    }
+
+    fn update_find(&self, character: Option<char>) -> (String, bool) {
+        let names = self.current.names();
+        let mut find = self.find.borrow_mut();
+        let position = match character {
+            Some(character) => find.push(character, &names),
+            None => find.pop(&names),
+        };
+        if let Some(position) = position {
+            self.select_position(position);
+        }
+        let query = find.query().to_owned();
+        let matched = position.is_some() || query.is_empty();
+        self.status.set_label(if matched {
+            "FIND  Enter accept · Escape cancel"
+        } else {
+            "FIND  No matching filename"
+        });
+        (query, matched)
+    }
+
+    fn accept_find(&self) {
+        self.find.borrow_mut().accept();
+        self.status.set_label("NORMAL  Find accepted · n/N repeat");
+    }
+
+    fn cancel_find(&self) {
+        let position = self.find.borrow_mut().cancel();
+        self.select_position(position);
+        self.status.set_label("NORMAL  Find cancelled");
+    }
+
+    fn repeat_find(&self, forward: bool) {
+        let names = self.current.names();
+        let position = self.find.borrow_mut().repeat(&names, forward);
+        if let Some(position) = position {
+            self.select_position(position);
+            self.status.set_label("NORMAL  Find match · n/N repeat");
+        } else {
+            self.status
+                .set_label("NORMAL  No previous find query or match");
+        }
     }
 
     fn prompt_create(self: &Rc<Self>, window: &gtk::ApplicationWindow, directory: bool) {
@@ -273,6 +329,7 @@ impl Browser {
     }
 
     fn navigate_to(self: &Rc<Self>, location: Location, preferred: Option<Location>) {
+        self.find.borrow_mut().reset();
         let selected = self.current.selection.selected();
         if selected != gtk::INVALID_LIST_POSITION {
             self.navigation.borrow_mut().remember_cursor(selected);
@@ -424,6 +481,40 @@ fn install_keyboard_controller(
     let weak_window = window.downgrade();
     let key_hints = key_hints.clone();
     controller.connect_key_pressed(move |_, key, _, modifiers| {
+        if let Some(browser) = browser.upgrade()
+            && browser.find.borrow().is_active()
+        {
+            match key {
+                gdk::Key::Escape => {
+                    browser.cancel_find();
+                    restore_hint_overlay(&key_hints, hints_enabled.get());
+                }
+                gdk::Key::Return | gdk::Key::KP_Enter => {
+                    browser.accept_find();
+                    restore_hint_overlay(&key_hints, hints_enabled.get());
+                }
+                gdk::Key::BackSpace => {
+                    let (query, matched) = browser.update_find(None);
+                    show_find_query(&key_hints, &query, matched);
+                }
+                _ if !modifiers.intersects(
+                    gdk::ModifierType::CONTROL_MASK
+                        | gdk::ModifierType::ALT_MASK
+                        | gdk::ModifierType::SUPER_MASK,
+                ) =>
+                {
+                    if let Some(character) = key.to_unicode()
+                        && !character.is_control()
+                    {
+                        let (query, matched) = browser.update_find(Some(character));
+                        show_find_query(&key_hints, &query, matched);
+                    }
+                }
+                _ => return glib::Propagation::Proceed,
+            }
+            return glib::Propagation::Stop;
+        }
+
         if key == gdk::Key::Escape {
             parser.borrow_mut().reset();
             if hints_enabled.get() {
@@ -450,6 +541,35 @@ fn install_keyboard_controller(
             }
             key_hints.set_visible(enabled);
             return glib::Propagation::Stop;
+        }
+
+        if !parser.borrow().is_pending()
+            && let Some(character) = key.to_unicode()
+        {
+            match character {
+                'f' => {
+                    if let Some(browser) = browser.upgrade() {
+                        browser.start_find();
+                        show_find_query(&key_hints, "", true);
+                    }
+                    return glib::Propagation::Stop;
+                }
+                'n' | 'N' => {
+                    if let Some(browser) = browser.upgrade() {
+                        browser.repeat_find(character == 'n');
+                    }
+                    return glib::Propagation::Stop;
+                }
+                '/' => {
+                    if let Some(browser) = browser.upgrade() {
+                        browser
+                            .status
+                            .set_label("NORMAL  Filtering with / is reserved for a future release");
+                    }
+                    return glib::Propagation::Stop;
+                }
+                _ => {}
+            }
         }
 
         let key_result = match key {
@@ -496,6 +616,29 @@ fn install_keyboard_controller(
         }
     });
     window.add_controller(controller);
+}
+
+fn restore_hint_overlay(grid: &gtk::Grid, hints_enabled: bool) {
+    if hints_enabled {
+        show_command_reference(grid);
+    } else {
+        grid.set_visible(false);
+    }
+}
+
+fn show_find_query(grid: &gtk::Grid, query: &str, matched: bool) {
+    let value = if query.is_empty() {
+        "Type to find…"
+    } else {
+        query
+    };
+    let state = if matched {
+        "Enter accept · Esc cancel"
+    } else {
+        "No match"
+    };
+    populate_hint_grid(grid, [("Find".to_owned(), value), (String::new(), state)]);
+    grid.set_visible(true);
 }
 
 fn show_command_reference(grid: &gtk::Grid) {

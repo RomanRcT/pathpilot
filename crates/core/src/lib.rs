@@ -125,6 +125,109 @@ pub struct OperationJob {
     pub progress: OperationProgress,
 }
 
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct FilenameFind {
+    active: bool,
+    query: String,
+    original_position: u32,
+    current_position: Option<u32>,
+}
+
+impl FilenameFind {
+    pub fn start(&mut self, position: u32) {
+        self.active = true;
+        self.query.clear();
+        self.original_position = position;
+        self.current_position = Some(position);
+    }
+
+    pub fn is_active(&self) -> bool {
+        self.active
+    }
+
+    pub fn query(&self) -> &str {
+        &self.query
+    }
+
+    pub fn push(&mut self, character: char, names: &[String]) -> Option<u32> {
+        self.query.push(character);
+        self.select_first(names)
+    }
+
+    pub fn pop(&mut self, names: &[String]) -> Option<u32> {
+        self.query.pop();
+        if self.query.is_empty() {
+            self.current_position = Some(self.original_position);
+            self.current_position
+        } else {
+            self.select_first(names)
+        }
+    }
+
+    pub fn accept(&mut self) {
+        self.active = false;
+    }
+
+    pub fn cancel(&mut self) -> u32 {
+        self.active = false;
+        self.query.clear();
+        self.current_position = Some(self.original_position);
+        self.original_position
+    }
+
+    pub fn repeat(&mut self, names: &[String], forward: bool) -> Option<u32> {
+        if self.query.is_empty() || names.is_empty() {
+            return None;
+        }
+        let current = self.current_position.unwrap_or(self.original_position) as usize;
+        let positions = matching_positions(names, &self.query);
+        let position = if forward {
+            positions
+                .iter()
+                .copied()
+                .find(|position| *position > current)
+                .or_else(|| positions.first().copied())
+        } else {
+            positions
+                .iter()
+                .rev()
+                .copied()
+                .find(|position| *position < current)
+                .or_else(|| positions.last().copied())
+        }? as u32;
+        self.current_position = Some(position);
+        Some(position)
+    }
+
+    pub fn reset(&mut self) {
+        *self = Self::default();
+    }
+
+    fn select_first(&mut self, names: &[String]) -> Option<u32> {
+        if self.query.is_empty() {
+            return self.current_position;
+        }
+        let start = self.original_position as usize;
+        let positions = matching_positions(names, &self.query);
+        let position = positions
+            .iter()
+            .copied()
+            .find(|position| *position >= start)
+            .or_else(|| positions.first().copied())? as u32;
+        self.current_position = Some(position);
+        Some(position)
+    }
+}
+
+fn matching_positions(names: &[String], query: &str) -> Vec<usize> {
+    let query = query.to_lowercase();
+    names
+        .iter()
+        .enumerate()
+        .filter_map(|(position, name)| name.to_lowercase().contains(&query).then_some(position))
+        .collect()
+}
+
 impl NavigationState {
     pub fn new(current: Location) -> Self {
         Self {
@@ -225,6 +328,10 @@ pub const COMMAND_REFERENCE: &[CommandHint] = &[
         label: "Add (create)",
     },
     CommandHint {
+        keys: "f",
+        label: "Find by name",
+    },
+    CommandHint {
         keys: "r / F2",
         label: "Rename",
     },
@@ -300,6 +407,10 @@ impl KeySequenceParser {
 
     pub fn reset(&mut self) {
         self.pending_g = None;
+    }
+
+    pub fn is_pending(&self) -> bool {
+        self.pending_g.is_some()
     }
 
     fn begin_sequence(&mut self, prefix: char, now: Instant) -> KeyResult {
@@ -472,6 +583,42 @@ mod tests {
                 .iter()
                 .any(|hint| hint.keys == "a f" || hint.keys == "a d")
         );
+    }
+
+    #[test]
+    fn filename_find_matches_unicode_case_insensitively_and_wraps() {
+        let names = vec![
+            "alpha.txt".to_owned(),
+            "Notes.md".to_owned(),
+            "ПРОЕКТ.yaml".to_owned(),
+            "other-notes.txt".to_owned(),
+        ];
+        let mut find = FilenameFind::default();
+        find.start(2);
+        for character in "проект".chars() {
+            find.push(character, &names);
+        }
+        assert_eq!(find.current_position, Some(2));
+
+        find.start(2);
+        for character in "notes".chars() {
+            find.push(character, &names);
+        }
+        assert_eq!(find.current_position, Some(3));
+        find.accept();
+        assert_eq!(find.repeat(&names, true), Some(1));
+        assert_eq!(find.repeat(&names, false), Some(3));
+    }
+
+    #[test]
+    fn cancelling_filename_find_restores_original_position() {
+        let names = vec!["alpha".to_owned(), "beta".to_owned()];
+        let mut find = FilenameFind::default();
+        find.start(1);
+        find.push('a', &names);
+        assert_eq!(find.cancel(), 1);
+        assert!(!find.is_active());
+        assert!(find.query().is_empty());
     }
 
     #[test]

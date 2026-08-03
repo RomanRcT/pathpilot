@@ -25,8 +25,11 @@ Every operation has an `OperationId`, typed `OperationKind`, state, progress fie
 - `a d` creates a directory;
 - `r` or `F2` renames the selected item;
 - `d d` or `Delete` moves the selected item to trash after confirmation.
+- `f` finds a filename without filtering the directory; `n` and `N` repeat the accepted search.
 
 `F1` toggles a persistent, column-aligned reference containing the top-level commands. Pressing a sequence prefix replaces it with the valid continuations for that prefix, and completing or cancelling the sequence restores the main reference. The semi-transparent foreground hint does not consume layout space or disappear on a timer.
+
+The `/` binding remains reserved for a future directory-filtering mode.
 
 ## Verification
 
