@@ -1,12 +1,31 @@
-//! GTK composition for the Phase 0 performance spike.
+//! GTK composition and directory presentation.
 
-use std::{cell::RefCell, rc::Rc, time::Instant};
+use std::{
+    cell::RefCell,
+    rc::Rc,
+    time::{Instant, SystemTime, UNIX_EPOCH},
+};
 
-use gtk::{gdk, glib, prelude::*};
-use pathpilot_core::{AppCommand, KeyResult, KeySequenceParser};
-use tracing::{debug, info, info_span};
+use gtk::{gdk, gio, glib, prelude::*};
+use pathpilot_core::{
+    AppCommand, FileEntry, FileKind, GenerationTracker, KeyResult, KeySequenceParser, Location,
+};
+use pathpilot_fs_local::{DirectoryEvent, load_directory};
+use tracing::{debug, info, info_span, warn};
 
-pub const SYNTHETIC_ENTRY_COUNT: u32 = 100_000;
+#[derive(Default)]
+struct DirectoryLoadState {
+    generation: RefCell<GenerationTracker>,
+    cancellable: RefCell<Option<gio::Cancellable>>,
+}
+
+impl Drop for DirectoryLoadState {
+    fn drop(&mut self) {
+        if let Some(cancellable) = self.cancellable.get_mut().take() {
+            cancellable.cancel();
+        }
+    }
+}
 
 pub fn build_window(app: &gtk::Application) -> gtk::ApplicationWindow {
     let startup_span = info_span!("build_window");
@@ -14,7 +33,7 @@ pub fn build_window(app: &gtk::Application) -> gtk::ApplicationWindow {
 
     let window = gtk::ApplicationWindow::builder()
         .application(app)
-        .title("PathPilot — Phase 0")
+        .title("PathPilot — Directory Model")
         .default_width(1200)
         .default_height(720)
         .build();
@@ -23,12 +42,12 @@ pub fn build_window(app: &gtk::Application) -> gtk::ApplicationWindow {
     let columns = gtk::Paned::new(gtk::Orientation::Horizontal);
     columns.set_wide_handle(true);
 
-    let parent = placeholder("Parent", "Synthetic parent column");
+    let parent = placeholder("Parent", "Parent navigation arrives in Milestone 4");
     let current_and_preview = gtk::Paned::new(gtk::Orientation::Horizontal);
     current_and_preview.set_wide_handle(true);
     let preview = placeholder("Preview", "Preview work starts in Phase 2");
 
-    let (list, selection, model_duration) = synthetic_list();
+    let (list, selection, store) = directory_list();
     let current = gtk::ScrolledWindow::builder()
         .hexpand(true)
         .vexpand(true)
@@ -37,18 +56,29 @@ pub fn build_window(app: &gtk::Application) -> gtk::ApplicationWindow {
 
     current_and_preview.set_start_child(Some(&current));
     current_and_preview.set_end_child(Some(&preview));
-    current_and_preview.set_position(560);
+    current_and_preview.set_position(650);
     current_and_preview.set_resize_start_child(true);
     current_and_preview.set_resize_end_child(true);
 
     columns.set_start_child(Some(&parent));
     columns.set_end_child(Some(&current_and_preview));
-    columns.set_position(260);
+    columns.set_position(240);
     columns.set_resize_start_child(true);
     columns.set_resize_end_child(true);
 
+    let location = gio::File::for_path(".");
+    let location = Location::new(location.uri());
+    let location_label = gtk::Label::builder()
+        .label(location.uri())
+        .xalign(0.0)
+        .ellipsize(gtk::pango::EllipsizeMode::Middle)
+        .margin_start(10)
+        .margin_end(10)
+        .margin_top(6)
+        .margin_bottom(6)
+        .build();
     let status = gtk::Label::builder()
-        .label(format!("Selected: 1 / {SYNTHETIC_ENTRY_COUNT}"))
+        .label("Loading directory…")
         .xalign(0.0)
         .margin_start(10)
         .margin_end(10)
@@ -59,64 +89,257 @@ pub fn build_window(app: &gtk::Application) -> gtk::ApplicationWindow {
     connect_selection_status(&selection, &status);
     install_keyboard_controller(&window, &selection, &list);
 
+    root.append(&location_label);
+    root.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
     root.append(&columns);
     root.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
     root.append(&status);
     window.set_child(Some(&root));
 
-    info!(
-        entry_count = SYNTHETIC_ENTRY_COUNT,
-        model_creation_ms = model_duration.as_millis(),
-        "window constructed"
-    );
+    let load_state = Rc::new(DirectoryLoadState::default());
+    start_directory_load(&location, &store, &status, &load_state);
+    window.connect_close_request(move |_| {
+        if let Some(cancellable) = load_state.cancellable.borrow_mut().take() {
+            cancellable.cancel();
+        }
+        glib::Propagation::Proceed
+    });
+
+    info!(location = location.uri(), "window constructed");
     window
 }
 
-fn synthetic_list() -> (gtk::ListView, gtk::SingleSelection, std::time::Duration) {
-    let started = Instant::now();
-    let strings: Vec<String> = (0..SYNTHETIC_ENTRY_COUNT)
-        .map(|index| format!("synthetic-file-{index:06}.txt"))
-        .collect();
-    let model = gtk::StringList::new(&strings.iter().map(String::as_str).collect::<Vec<_>>());
-    let elapsed = started.elapsed();
-
-    let selection = gtk::SingleSelection::new(Some(model));
+fn directory_list() -> (gtk::ListView, gtk::SingleSelection, gio::ListStore) {
+    let store = gio::ListStore::new::<glib::BoxedAnyObject>();
+    let sorter = gtk::CustomSorter::new(|left, right| {
+        let left = left
+            .downcast_ref::<glib::BoxedAnyObject>()
+            .expect("directory model contains BoxedAnyObject");
+        let right = right
+            .downcast_ref::<glib::BoxedAnyObject>()
+            .expect("directory model contains BoxedAnyObject");
+        left.borrow::<FileEntry>()
+            .compare_name(&right.borrow::<FileEntry>())
+            .into()
+    });
+    let sorted = gtk::SortListModel::new(Some(store.clone()), Some(sorter));
+    let selection = gtk::SingleSelection::new(Some(sorted));
     selection.set_autoselect(true);
     selection.set_can_unselect(false);
 
     let factory = gtk::SignalListItemFactory::new();
     factory.connect_setup(|_, item| {
-        let label = gtk::Label::builder()
-            .xalign(0.0)
-            .margin_start(8)
-            .margin_end(8)
-            .margin_top(3)
-            .margin_bottom(3)
-            .build();
         item.downcast_ref::<gtk::ListItem>()
             .expect("factory setup receives ListItem")
-            .set_child(Some(&label));
+            .set_child(Some(&create_row()));
     });
-    factory.connect_bind(|_, item| {
-        let item = item
-            .downcast_ref::<gtk::ListItem>()
-            .expect("factory bind receives ListItem");
-        let string_object = item
-            .item()
-            .and_downcast::<gtk::StringObject>()
-            .expect("StringList contains StringObject values");
-        let label = item
-            .child()
-            .and_downcast::<gtk::Label>()
-            .expect("factory child is a Label");
-        label.set_label(&string_object.string());
-    });
+    factory.connect_bind(|_, item| bind_row(item));
 
     let list = gtk::ListView::new(Some(selection.clone()), Some(factory));
     list.set_single_click_activate(false);
     list.set_vexpand(true);
 
-    (list, selection, elapsed)
+    (list, selection, store)
+}
+
+fn create_row() -> gtk::Box {
+    let row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+    row.set_margin_start(8);
+    row.set_margin_end(8);
+    row.set_margin_top(3);
+    row.set_margin_bottom(3);
+
+    let icon = gtk::Image::new();
+    icon.set_icon_size(gtk::IconSize::Normal);
+    let name = gtk::Label::builder()
+        .xalign(0.0)
+        .hexpand(true)
+        .ellipsize(gtk::pango::EllipsizeMode::End)
+        .build();
+    let kind = metadata_label(90);
+    let size = metadata_label(80);
+    let modified = metadata_label(135);
+    row.append(&icon);
+    row.append(&name);
+    row.append(&kind);
+    row.append(&size);
+    row.append(&modified);
+    row
+}
+
+fn metadata_label(width: i32) -> gtk::Label {
+    let label = gtk::Label::builder()
+        .xalign(0.0)
+        .width_request(width)
+        .build();
+    label.add_css_class("dim-label");
+    label
+}
+
+fn bind_row(item: &glib::Object) {
+    let item = item
+        .downcast_ref::<gtk::ListItem>()
+        .expect("factory bind receives ListItem");
+    let object = item
+        .item()
+        .and_downcast::<glib::BoxedAnyObject>()
+        .expect("directory model contains FileEntry values");
+    let entry = object.borrow::<FileEntry>();
+    let row = item
+        .child()
+        .and_downcast::<gtk::Box>()
+        .expect("factory child is a Box");
+    let icon = row
+        .first_child()
+        .and_downcast::<gtk::Image>()
+        .expect("first row child is an Image");
+    let name = next_label(&icon);
+    let kind = next_label(&name);
+    let size = next_label(&kind);
+    let modified = next_label(&size);
+
+    let content_type = entry.content_type.as_deref().unwrap_or_else(|| {
+        if entry.kind == FileKind::Directory {
+            "inode/directory"
+        } else {
+            "application/octet-stream"
+        }
+    });
+    icon.set_from_gicon(&gio::content_type_get_icon(content_type));
+    name.set_label(&entry.display_name);
+    kind.set_label(file_kind_label(entry.kind));
+    size.set_label(&format_size(entry.size));
+    modified.set_label(&format_modified(entry.modified));
+    row.set_tooltip_text(Some(entry.location.uri()));
+}
+
+fn next_label(widget: &impl IsA<gtk::Widget>) -> gtk::Label {
+    widget
+        .next_sibling()
+        .and_downcast::<gtk::Label>()
+        .expect("row metadata child is a Label")
+}
+
+fn file_kind_label(kind: FileKind) -> &'static str {
+    match kind {
+        FileKind::Directory => "Folder",
+        FileKind::Regular => "File",
+        FileKind::Symlink => "Link",
+        FileKind::Special => "Special",
+        FileKind::Unknown => "Unknown",
+    }
+}
+
+fn format_size(size: Option<u64>) -> String {
+    let Some(bytes) = size else {
+        return "—".to_owned();
+    };
+    const UNITS: [&str; 5] = ["B", "KiB", "MiB", "GiB", "TiB"];
+    let mut value = bytes as f64;
+    let mut unit = 0;
+    while value >= 1024.0 && unit < UNITS.len() - 1 {
+        value /= 1024.0;
+        unit += 1;
+    }
+    if unit == 0 {
+        format!("{bytes} B")
+    } else {
+        format!("{value:.1} {}", UNITS[unit])
+    }
+}
+
+fn format_modified(modified: Option<SystemTime>) -> String {
+    let Some(seconds) = modified
+        .and_then(|value| value.duration_since(UNIX_EPOCH).ok())
+        .and_then(|value| i64::try_from(value.as_secs()).ok())
+    else {
+        return "—".to_owned();
+    };
+    glib::DateTime::from_unix_local(seconds)
+        .ok()
+        .and_then(|value| value.format("%Y-%m-%d %H:%M").ok())
+        .map(|value| value.to_string())
+        .unwrap_or_else(|| "—".to_owned())
+}
+
+fn start_directory_load(
+    location: &Location,
+    store: &gio::ListStore,
+    status: &gtk::Label,
+    state: &Rc<DirectoryLoadState>,
+) {
+    if let Some(previous) = state.cancellable.borrow_mut().take() {
+        previous.cancel();
+    }
+    store.remove_all();
+    status.set_label("Loading directory…");
+    let generation = state.generation.borrow_mut().advance();
+    let started = Instant::now();
+    let location_uri = location.uri().to_owned();
+
+    let cancellable = load_directory(
+        location,
+        generation,
+        glib::clone!(
+            #[weak]
+            store,
+            #[weak]
+            status,
+            #[strong]
+            state,
+            move |event| {
+                let event_generation = match &event {
+                    DirectoryEvent::Batch { generation, .. }
+                    | DirectoryEvent::Finished { generation }
+                    | DirectoryEvent::Failed { generation, .. } => *generation,
+                };
+                if !state.generation.borrow().accepts(event_generation) {
+                    debug!(
+                        generation = event_generation.value(),
+                        "discarding stale directory result"
+                    );
+                    return;
+                }
+
+                match event {
+                    DirectoryEvent::Batch { entries, .. } => {
+                        let objects: Vec<_> =
+                            entries.into_iter().map(glib::BoxedAnyObject::new).collect();
+                        store.extend_from_slice(&objects);
+                        status.set_label(&format!("Loading… {} entries", store.n_items()));
+                        debug!(
+                            generation = event_generation.value(),
+                            batch_size = objects.len(),
+                            total = store.n_items(),
+                            "directory batch published"
+                        );
+                    }
+                    DirectoryEvent::Finished { .. } => {
+                        state.cancellable.borrow_mut().take();
+                        status.set_label(&format!("{} entries", store.n_items()));
+                        info!(
+                            generation = event_generation.value(),
+                            entry_count = store.n_items(),
+                            elapsed_ms = started.elapsed().as_millis(),
+                            location = location_uri,
+                            "directory load finished"
+                        );
+                    }
+                    DirectoryEvent::Failed { message, .. } => {
+                        state.cancellable.borrow_mut().take();
+                        status.set_label(&format!("Could not load directory: {message}"));
+                        warn!(
+                            generation = event_generation.value(),
+                            location = location_uri,
+                            error = message,
+                            "directory load failed"
+                        );
+                    }
+                }
+            }
+        ),
+    );
+    *state.cancellable.borrow_mut() = Some(cancellable);
 }
 
 fn connect_selection_status(selection: &gtk::SingleSelection, status: &gtk::Label) {
@@ -125,11 +348,11 @@ fn connect_selection_status(selection: &gtk::SingleSelection, status: &gtk::Labe
         status,
         move |selection| {
             let selected = selection.selected();
-            status.set_label(&format!(
-                "Selected: {} / {SYNTHETIC_ENTRY_COUNT}",
-                selected + 1
-            ));
-            debug!(selected_index = selected, "selection changed");
+            let total = selection.n_items();
+            if selected != gtk::INVALID_LIST_POSITION {
+                status.set_label(&format!("Selected: {} / {total}", selected + 1));
+                debug!(selected_index = selected, "selection changed");
+            }
         }
     ));
 }
@@ -176,12 +399,16 @@ fn install_keyboard_controller(
 }
 
 fn dispatch(command: AppCommand, selection: &gtk::SingleSelection, list: &gtk::ListView) {
-    let current = selection.selected().min(SYNTHETIC_ENTRY_COUNT - 1);
+    let count = selection.n_items();
+    if count == 0 {
+        return;
+    }
+    let current = selection.selected().min(count - 1);
     let target = match command {
         AppCommand::NavigateUp => current.saturating_sub(1),
-        AppCommand::NavigateDown => (current + 1).min(SYNTHETIC_ENTRY_COUNT - 1),
+        AppCommand::NavigateDown => (current + 1).min(count - 1),
         AppCommand::GoFirst => 0,
-        AppCommand::GoLast => SYNTHETIC_ENTRY_COUNT - 1,
+        AppCommand::GoLast => count - 1,
     };
 
     selection.set_selected(target);
@@ -205,4 +432,16 @@ fn placeholder(title: &str, description: &str) -> gtk::Widget {
     content.append(&heading);
     content.append(&body);
     content.upcast()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn formats_file_sizes() {
+        assert_eq!(format_size(None), "—");
+        assert_eq!(format_size(Some(512)), "512 B");
+        assert_eq!(format_size(Some(1536)), "1.5 KiB");
+    }
 }

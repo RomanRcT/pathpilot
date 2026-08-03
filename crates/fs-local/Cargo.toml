@@ -1,5 +1,5 @@
 [package]
-name = "pathpilot-ui-gtk"
+name = "pathpilot-fs-local"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -8,7 +8,8 @@ rust-version.workspace = true
 [dependencies]
 gio.workspace = true
 glib.workspace = true
-gtk.workspace = true
 pathpilot-core.workspace = true
-pathpilot-fs-local.workspace = true
 tracing.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
