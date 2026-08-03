@@ -6,15 +6,18 @@ PathPilot is an experimental keyboard-first graphical file manager for Linux. Th
 
 - Three resizable columns.
 - A virtualized `GtkListView` populated asynchronously from the working directory.
+- Three live parent/current/preview columns with independently cancelable models.
 - Batched GIO enumeration with cancellation and stale-generation rejection.
 - Name, native content-type icon, kind, size, and modified-time columns.
 - Case-insensitive name sorting with directories first.
+- `h/j/k/l`, `gg`, and `G` navigation with cursor restoration per directory.
+- Single-click selection and double-click directory/file opening.
 - Normal-mode navigation with `j`, `k`, `gg`, and `G`.
 - A status line with the selected index and entry count.
 - Structured startup, model creation, and selection tracing.
 - GTK-independent commands and key-sequence parsing.
 
-The application currently opens the directory from which it is started. Directory-to-directory navigation is part of Milestone 4.
+The application opens the directory from which it is started. Use `l` or double click to enter a directory and `h` to return to its parent.
 
 ## Fedora development setup
 

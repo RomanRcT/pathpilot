@@ -2,6 +2,7 @@
 
 use std::{
     cmp::Ordering,
+    collections::HashMap,
     time::{Duration, Instant, SystemTime},
 };
 
@@ -72,6 +73,35 @@ pub struct GenerationTracker {
     current: Generation,
 }
 
+#[derive(Debug)]
+pub struct NavigationState {
+    current: Location,
+    cursor_by_location: HashMap<Location, u32>,
+}
+
+impl NavigationState {
+    pub fn new(current: Location) -> Self {
+        Self {
+            current,
+            cursor_by_location: HashMap::new(),
+        }
+    }
+
+    pub fn current(&self) -> &Location {
+        &self.current
+    }
+
+    pub fn remember_cursor(&mut self, position: u32) {
+        self.cursor_by_location
+            .insert(self.current.clone(), position);
+    }
+
+    pub fn navigate_to(&mut self, location: Location) -> Option<u32> {
+        self.current = location;
+        self.cursor_by_location.get(&self.current).copied()
+    }
+}
+
 impl GenerationTracker {
     pub fn advance(&mut self) -> Generation {
         self.current.0 = self.current.0.wrapping_add(1);
@@ -88,6 +118,8 @@ impl GenerationTracker {
 pub enum AppCommand {
     NavigateUp,
     NavigateDown,
+    Enter,
+    GoParent,
     GoFirst,
     GoLast,
 }
@@ -132,6 +164,8 @@ impl KeySequenceParser {
         match key {
             'j' => KeyResult::Command(AppCommand::NavigateDown),
             'k' => KeyResult::Command(AppCommand::NavigateUp),
+            'l' => KeyResult::Command(AppCommand::Enter),
+            'h' => KeyResult::Command(AppCommand::GoParent),
             'G' => KeyResult::Command(AppCommand::GoLast),
             'g' => {
                 self.pending_g = Some(now);
@@ -194,6 +228,19 @@ mod tests {
     }
 
     #[test]
+    fn navigation_restores_cursor_for_visited_directory() {
+        let first = Location::new("file:///first");
+        let second = Location::new("file:///second");
+        let mut navigation = NavigationState::new(first.clone());
+
+        navigation.remember_cursor(42);
+        assert_eq!(navigation.navigate_to(second), None);
+        navigation.remember_cursor(7);
+        assert_eq!(navigation.navigate_to(first), Some(42));
+        assert_eq!(navigation.current().uri(), "file:///first");
+    }
+
+    #[test]
     fn maps_single_key_commands() {
         let now = Instant::now();
         let mut parser = KeySequenceParser::default();
@@ -210,6 +257,11 @@ mod tests {
             parser.feed('G', now),
             KeyResult::Command(AppCommand::GoLast)
         );
+        assert_eq!(
+            parser.feed('h', now),
+            KeyResult::Command(AppCommand::GoParent)
+        );
+        assert_eq!(parser.feed('l', now), KeyResult::Command(AppCommand::Enter));
     }
 
     #[test]

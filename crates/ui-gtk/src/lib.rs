@@ -1,447 +1,347 @@
-//! GTK composition and directory presentation.
+//! GTK composition for three-column local filesystem navigation.
+
+mod directory_pane;
 
 use std::{
     cell::RefCell,
-    rc::Rc,
-    time::{Instant, SystemTime, UNIX_EPOCH},
+    rc::{Rc, Weak},
+    time::Instant,
 };
 
+use directory_pane::DirectoryPane;
 use gtk::{gdk, gio, glib, prelude::*};
 use pathpilot_core::{
-    AppCommand, FileEntry, FileKind, GenerationTracker, KeyResult, KeySequenceParser, Location,
+    AppCommand, FileEntry, FileKind, KeyResult, KeySequenceParser, Location, NavigationState,
 };
-use pathpilot_fs_local::{DirectoryEvent, load_directory};
 use tracing::{debug, info, info_span, warn};
 
-#[derive(Default)]
-struct DirectoryLoadState {
-    generation: RefCell<GenerationTracker>,
-    cancellable: RefCell<Option<gio::Cancellable>>,
+struct Browser {
+    navigation: RefCell<NavigationState>,
+    parent: DirectoryPane,
+    current: DirectoryPane,
+    preview: DirectoryPane,
+    location_label: gtk::Label,
+    status: gtk::Label,
 }
 
-impl Drop for DirectoryLoadState {
-    fn drop(&mut self) {
-        if let Some(cancellable) = self.cancellable.get_mut().take() {
-            cancellable.cancel();
+impl Browser {
+    fn new(initial: Location) -> Rc<Self> {
+        Rc::new(Self {
+            navigation: RefCell::new(NavigationState::new(initial)),
+            parent: DirectoryPane::new("Parent"),
+            current: DirectoryPane::new("Current"),
+            preview: DirectoryPane::new("Preview"),
+            location_label: gtk::Label::builder()
+                .xalign(0.0)
+                .ellipsize(gtk::pango::EllipsizeMode::Middle)
+                .margin_start(10)
+                .margin_end(10)
+                .margin_top(6)
+                .margin_bottom(6)
+                .build(),
+            status: gtk::Label::builder()
+                .label("NORMAL")
+                .xalign(0.0)
+                .margin_start(10)
+                .margin_end(10)
+                .margin_top(6)
+                .margin_bottom(6)
+                .build(),
+        })
+    }
+
+    fn connect(self: &Rc<Self>) {
+        let weak = Rc::downgrade(self);
+        self.current
+            .selection
+            .connect_selected_notify(move |selection| {
+                if let Some(browser) = weak.upgrade() {
+                    browser.selection_changed(selection.selected());
+                }
+            });
+
+        connect_activation(&self.current, Rc::downgrade(self));
+        connect_activation(&self.parent, Rc::downgrade(self));
+        connect_activation(&self.preview, Rc::downgrade(self));
+    }
+
+    fn initial_load(self: &Rc<Self>) {
+        self.reload_columns(None, None);
+    }
+
+    fn selection_changed(self: &Rc<Self>, selected: u32) {
+        let total = self.current.selection.n_items();
+        if selected == gtk::INVALID_LIST_POSITION {
+            self.status.set_label("NORMAL  No selection");
+            self.preview.show_message("Preview", "No selection");
+            return;
         }
+        self.status.set_label(&format!(
+            "NORMAL  Selected: {} / {total}  h/j/k/l navigate",
+            selected + 1
+        ));
+        self.update_preview();
+    }
+
+    fn update_preview(self: &Rc<Self>) {
+        let Some(entry) = self.current.selected_entry() else {
+            self.preview.show_message("Preview", "No selection");
+            return;
+        };
+        if entry.kind == FileKind::Directory {
+            self.preview.load(&entry.location, |_| {});
+        } else {
+            self.preview.show_message(
+                &entry.display_name,
+                &format!(
+                    "{} · {} · {}",
+                    kind_label(entry.kind),
+                    format_size(entry.size),
+                    entry.content_type.as_deref().unwrap_or("unknown type")
+                ),
+            );
+        }
+    }
+
+    fn dispatch(self: &Rc<Self>, command: AppCommand) {
+        match command {
+            AppCommand::NavigateUp => self.move_cursor(-1),
+            AppCommand::NavigateDown => self.move_cursor(1),
+            AppCommand::GoFirst => self.select_position(0),
+            AppCommand::GoLast => {
+                let count = self.current.selection.n_items();
+                if count > 0 {
+                    self.select_position(count - 1);
+                }
+            }
+            AppCommand::Enter => {
+                if let Some(entry) = self.current.selected_entry() {
+                    self.open_entry(entry);
+                }
+            }
+            AppCommand::GoParent => self.go_parent(),
+        }
+    }
+
+    fn move_cursor(&self, offset: i32) {
+        let count = self.current.selection.n_items();
+        if count == 0 {
+            return;
+        }
+        let current = self.current.selection.selected().min(count - 1);
+        let target = if offset < 0 {
+            current.saturating_sub(offset.unsigned_abs())
+        } else {
+            current.saturating_add(offset as u32).min(count - 1)
+        };
+        self.select_position(target);
+    }
+
+    fn select_position(&self, position: u32) {
+        self.current.select_position(position);
+    }
+
+    fn open_entry(self: &Rc<Self>, entry: FileEntry) {
+        if entry.kind == FileKind::Directory {
+            self.navigate_to(entry.location, None);
+            return;
+        }
+
+        let uri = entry.location.uri().to_owned();
+        let callback_uri = uri.clone();
+        gio::AppInfo::launch_default_for_uri_async(
+            &uri,
+            None::<&gio::AppLaunchContext>,
+            None::<&gio::Cancellable>,
+            move |result| {
+                if let Err(error) = result {
+                    warn!(%error, uri = callback_uri, "could not open file with default application");
+                }
+            },
+        );
+    }
+
+    fn go_parent(self: &Rc<Self>) {
+        let current = self.navigation.borrow().current().clone();
+        let file = gio::File::for_uri(current.uri());
+        let Some(parent) = file.parent() else {
+            self.status.set_label("NORMAL  Already at filesystem root");
+            return;
+        };
+        self.navigate_to(Location::new(parent.uri()), Some(current));
+    }
+
+    fn navigate_to(self: &Rc<Self>, location: Location, preferred: Option<Location>) {
+        let selected = self.current.selection.selected();
+        if selected != gtk::INVALID_LIST_POSITION {
+            self.navigation.borrow_mut().remember_cursor(selected);
+        }
+        let restored = self.navigation.borrow_mut().navigate_to(location);
+        self.reload_columns(preferred, restored);
+    }
+
+    fn reload_columns(
+        self: &Rc<Self>,
+        preferred: Option<Location>,
+        restored_position: Option<u32>,
+    ) {
+        let location = self.navigation.borrow().current().clone();
+        self.location_label.set_label(location.uri());
+        self.status.set_label("NORMAL  Loading…");
+
+        let weak = Rc::downgrade(self);
+        self.current.load(&location, move |success| {
+            let Some(browser) = weak.upgrade() else {
+                return;
+            };
+            if !success {
+                return;
+            }
+            let selected_preferred = preferred
+                .as_ref()
+                .is_some_and(|location| browser.current.select_location(location));
+            if !selected_preferred {
+                browser
+                    .current
+                    .select_position(restored_position.unwrap_or(0));
+            }
+            browser.selection_changed(browser.current.selection.selected());
+        });
+
+        let file = gio::File::for_uri(location.uri());
+        if let Some(parent_file) = file.parent() {
+            let parent_location = Location::new(parent_file.uri());
+            let current_location = location.clone();
+            let parent_pane = self.parent.clone();
+            self.parent.load(&parent_location, move |success| {
+                if success {
+                    parent_pane.select_location(&current_location);
+                }
+            });
+        } else {
+            self.parent.show_message("Parent", "Filesystem root");
+        }
+        self.preview.show_message("Preview", "Loading selection…");
+        info!(location = location.uri(), "navigation started");
+    }
+
+    fn cancel(&self) {
+        self.parent.cancel();
+        self.current.cancel();
+        self.preview.cancel();
     }
 }
 
 pub fn build_window(app: &gtk::Application) -> gtk::ApplicationWindow {
     let startup_span = info_span!("build_window");
     let _guard = startup_span.enter();
+    let initial = Location::new(gio::File::for_path(".").uri());
+    let browser = Browser::new(initial);
 
     let window = gtk::ApplicationWindow::builder()
         .application(app)
-        .title("PathPilot — Directory Model")
-        .default_width(1200)
-        .default_height(720)
+        .title("PathPilot — Three-Column Navigation")
+        .default_width(1400)
+        .default_height(760)
         .build();
-
+    let columns = three_column_layout(&browser);
     let root = gtk::Box::new(gtk::Orientation::Vertical, 0);
-    let columns = gtk::Paned::new(gtk::Orientation::Horizontal);
-    columns.set_wide_handle(true);
-
-    let parent = placeholder("Parent", "Parent navigation arrives in Milestone 4");
-    let current_and_preview = gtk::Paned::new(gtk::Orientation::Horizontal);
-    current_and_preview.set_wide_handle(true);
-    let preview = placeholder("Preview", "Preview work starts in Phase 2");
-
-    let (list, selection, store) = directory_list();
-    let current = gtk::ScrolledWindow::builder()
-        .hexpand(true)
-        .vexpand(true)
-        .child(&list)
-        .build();
-
-    current_and_preview.set_start_child(Some(&current));
-    current_and_preview.set_end_child(Some(&preview));
-    current_and_preview.set_position(650);
-    current_and_preview.set_resize_start_child(true);
-    current_and_preview.set_resize_end_child(true);
-
-    columns.set_start_child(Some(&parent));
-    columns.set_end_child(Some(&current_and_preview));
-    columns.set_position(240);
-    columns.set_resize_start_child(true);
-    columns.set_resize_end_child(true);
-
-    let location = gio::File::for_path(".");
-    let location = Location::new(location.uri());
-    let location_label = gtk::Label::builder()
-        .label(location.uri())
-        .xalign(0.0)
-        .ellipsize(gtk::pango::EllipsizeMode::Middle)
-        .margin_start(10)
-        .margin_end(10)
-        .margin_top(6)
-        .margin_bottom(6)
-        .build();
-    let status = gtk::Label::builder()
-        .label("Loading directory…")
-        .xalign(0.0)
-        .margin_start(10)
-        .margin_end(10)
-        .margin_top(6)
-        .margin_bottom(6)
-        .build();
-
-    connect_selection_status(&selection, &status);
-    install_keyboard_controller(&window, &selection, &list);
-
-    root.append(&location_label);
+    root.append(&browser.location_label);
     root.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
     root.append(&columns);
     root.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
-    root.append(&status);
+    root.append(&browser.status);
     window.set_child(Some(&root));
 
-    let load_state = Rc::new(DirectoryLoadState::default());
-    start_directory_load(&location, &store, &status, &load_state);
+    browser.connect();
+    install_keyboard_controller(&window, Rc::downgrade(&browser));
+    let close_browser = browser.clone();
     window.connect_close_request(move |_| {
-        if let Some(cancellable) = load_state.cancellable.borrow_mut().take() {
-            cancellable.cancel();
-        }
+        close_browser.cancel();
         glib::Propagation::Proceed
     });
+    browser.initial_load();
 
-    info!(location = location.uri(), "window constructed");
+    info!("window constructed");
     window
 }
 
-fn directory_list() -> (gtk::ListView, gtk::SingleSelection, gio::ListStore) {
-    let store = gio::ListStore::new::<glib::BoxedAnyObject>();
-    let sorter = gtk::CustomSorter::new(|left, right| {
-        let left = left
-            .downcast_ref::<glib::BoxedAnyObject>()
-            .expect("directory model contains BoxedAnyObject");
-        let right = right
-            .downcast_ref::<glib::BoxedAnyObject>()
-            .expect("directory model contains BoxedAnyObject");
-        left.borrow::<FileEntry>()
-            .compare_name(&right.borrow::<FileEntry>())
-            .into()
-    });
-    let sorted = gtk::SortListModel::new(Some(store.clone()), Some(sorter));
-    let selection = gtk::SingleSelection::new(Some(sorted));
-    selection.set_autoselect(true);
-    selection.set_can_unselect(false);
-
-    let factory = gtk::SignalListItemFactory::new();
-    factory.connect_setup(|_, item| {
-        item.downcast_ref::<gtk::ListItem>()
-            .expect("factory setup receives ListItem")
-            .set_child(Some(&create_row()));
-    });
-    factory.connect_bind(|_, item| bind_row(item));
-
-    let list = gtk::ListView::new(Some(selection.clone()), Some(factory));
-    list.set_single_click_activate(false);
-    list.set_vexpand(true);
-
-    (list, selection, store)
+fn three_column_layout(browser: &Browser) -> gtk::Paned {
+    let outer = gtk::Paned::new(gtk::Orientation::Horizontal);
+    let right = gtk::Paned::new(gtk::Orientation::Horizontal);
+    outer.set_wide_handle(true);
+    right.set_wide_handle(true);
+    outer.set_start_child(Some(&browser.parent.widget));
+    outer.set_end_child(Some(&right));
+    outer.set_position(360);
+    outer.set_resize_start_child(true);
+    outer.set_resize_end_child(true);
+    right.set_start_child(Some(&browser.current.widget));
+    right.set_end_child(Some(&browser.preview.widget));
+    right.set_position(560);
+    right.set_resize_start_child(true);
+    right.set_resize_end_child(true);
+    outer
 }
 
-fn create_row() -> gtk::Box {
-    let row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-    row.set_margin_start(8);
-    row.set_margin_end(8);
-    row.set_margin_top(3);
-    row.set_margin_bottom(3);
-
-    let icon = gtk::Image::new();
-    icon.set_icon_size(gtk::IconSize::Normal);
-    let name = gtk::Label::builder()
-        .xalign(0.0)
-        .hexpand(true)
-        .ellipsize(gtk::pango::EllipsizeMode::End)
-        .build();
-    let kind = metadata_label(90);
-    let size = metadata_label(80);
-    let modified = metadata_label(135);
-    row.append(&icon);
-    row.append(&name);
-    row.append(&kind);
-    row.append(&size);
-    row.append(&modified);
-    row
-}
-
-fn metadata_label(width: i32) -> gtk::Label {
-    let label = gtk::Label::builder()
-        .xalign(0.0)
-        .width_request(width)
-        .build();
-    label.add_css_class("dim-label");
-    label
-}
-
-fn bind_row(item: &glib::Object) {
-    let item = item
-        .downcast_ref::<gtk::ListItem>()
-        .expect("factory bind receives ListItem");
-    let object = item
-        .item()
-        .and_downcast::<glib::BoxedAnyObject>()
-        .expect("directory model contains FileEntry values");
-    let entry = object.borrow::<FileEntry>();
-    let row = item
-        .child()
-        .and_downcast::<gtk::Box>()
-        .expect("factory child is a Box");
-    let icon = row
-        .first_child()
-        .and_downcast::<gtk::Image>()
-        .expect("first row child is an Image");
-    let name = next_label(&icon);
-    let kind = next_label(&name);
-    let size = next_label(&kind);
-    let modified = next_label(&size);
-
-    let content_type = entry.content_type.as_deref().unwrap_or_else(|| {
-        if entry.kind == FileKind::Directory {
-            "inode/directory"
-        } else {
-            "application/octet-stream"
+fn connect_activation(pane: &DirectoryPane, browser: Weak<Browser>) {
+    let list = pane.list.clone();
+    let selection = pane.selection.clone();
+    list.connect_activate(move |_, position| {
+        selection.set_selected(position);
+        let entry = selection
+            .selected_item()
+            .and_downcast::<glib::BoxedAnyObject>()
+            .map(|object| object.borrow::<FileEntry>().clone());
+        if let (Some(browser), Some(entry)) = (browser.upgrade(), entry) {
+            browser.open_entry(entry);
         }
     });
-    icon.set_from_gicon(&gio::content_type_get_icon(content_type));
-    name.set_label(&entry.display_name);
-    kind.set_label(file_kind_label(entry.kind));
-    size.set_label(&format_size(entry.size));
-    modified.set_label(&format_modified(entry.modified));
-    row.set_tooltip_text(Some(entry.location.uri()));
 }
 
-fn next_label(widget: &impl IsA<gtk::Widget>) -> gtk::Label {
-    widget
-        .next_sibling()
-        .and_downcast::<gtk::Label>()
-        .expect("row metadata child is a Label")
+fn install_keyboard_controller(window: &gtk::ApplicationWindow, browser: Weak<Browser>) {
+    let parser = Rc::new(RefCell::new(KeySequenceParser::default()));
+    let controller = gtk::EventControllerKey::new();
+    controller.connect_key_pressed(move |_, key, _, modifiers| {
+        if modifiers.intersects(
+            gdk::ModifierType::CONTROL_MASK
+                | gdk::ModifierType::ALT_MASK
+                | gdk::ModifierType::SUPER_MASK,
+        ) {
+            return glib::Propagation::Proceed;
+        }
+
+        let Some(character) = key.to_unicode() else {
+            return glib::Propagation::Proceed;
+        };
+        match parser.borrow_mut().feed(character, Instant::now()) {
+            KeyResult::Command(command) => {
+                if let Some(browser) = browser.upgrade() {
+                    debug!(?command, "dispatching keyboard command");
+                    browser.dispatch(command);
+                }
+                glib::Propagation::Stop
+            }
+            KeyResult::Pending => glib::Propagation::Stop,
+            KeyResult::Ignored => glib::Propagation::Proceed,
+        }
+    });
+    window.add_controller(controller);
 }
 
-fn file_kind_label(kind: FileKind) -> &'static str {
+fn kind_label(kind: FileKind) -> &'static str {
     match kind {
-        FileKind::Directory => "Folder",
-        FileKind::Regular => "File",
-        FileKind::Symlink => "Link",
-        FileKind::Special => "Special",
-        FileKind::Unknown => "Unknown",
+        FileKind::Directory => "folder",
+        FileKind::Regular => "file",
+        FileKind::Symlink => "symbolic link",
+        FileKind::Special => "special file",
+        FileKind::Unknown => "unknown",
     }
 }
 
 fn format_size(size: Option<u64>) -> String {
-    let Some(bytes) = size else {
-        return "—".to_owned();
-    };
-    const UNITS: [&str; 5] = ["B", "KiB", "MiB", "GiB", "TiB"];
-    let mut value = bytes as f64;
-    let mut unit = 0;
-    while value >= 1024.0 && unit < UNITS.len() - 1 {
-        value /= 1024.0;
-        unit += 1;
-    }
-    if unit == 0 {
-        format!("{bytes} B")
-    } else {
-        format!("{value:.1} {}", UNITS[unit])
-    }
-}
-
-fn format_modified(modified: Option<SystemTime>) -> String {
-    let Some(seconds) = modified
-        .and_then(|value| value.duration_since(UNIX_EPOCH).ok())
-        .and_then(|value| i64::try_from(value.as_secs()).ok())
-    else {
-        return "—".to_owned();
-    };
-    glib::DateTime::from_unix_local(seconds)
-        .ok()
-        .and_then(|value| value.format("%Y-%m-%d %H:%M").ok())
-        .map(|value| value.to_string())
-        .unwrap_or_else(|| "—".to_owned())
-}
-
-fn start_directory_load(
-    location: &Location,
-    store: &gio::ListStore,
-    status: &gtk::Label,
-    state: &Rc<DirectoryLoadState>,
-) {
-    if let Some(previous) = state.cancellable.borrow_mut().take() {
-        previous.cancel();
-    }
-    store.remove_all();
-    status.set_label("Loading directory…");
-    let generation = state.generation.borrow_mut().advance();
-    let started = Instant::now();
-    let location_uri = location.uri().to_owned();
-
-    let cancellable = load_directory(
-        location,
-        generation,
-        glib::clone!(
-            #[weak]
-            store,
-            #[weak]
-            status,
-            #[strong]
-            state,
-            move |event| {
-                let event_generation = match &event {
-                    DirectoryEvent::Batch { generation, .. }
-                    | DirectoryEvent::Finished { generation }
-                    | DirectoryEvent::Failed { generation, .. } => *generation,
-                };
-                if !state.generation.borrow().accepts(event_generation) {
-                    debug!(
-                        generation = event_generation.value(),
-                        "discarding stale directory result"
-                    );
-                    return;
-                }
-
-                match event {
-                    DirectoryEvent::Batch { entries, .. } => {
-                        let objects: Vec<_> =
-                            entries.into_iter().map(glib::BoxedAnyObject::new).collect();
-                        store.extend_from_slice(&objects);
-                        status.set_label(&format!("Loading… {} entries", store.n_items()));
-                        debug!(
-                            generation = event_generation.value(),
-                            batch_size = objects.len(),
-                            total = store.n_items(),
-                            "directory batch published"
-                        );
-                    }
-                    DirectoryEvent::Finished { .. } => {
-                        state.cancellable.borrow_mut().take();
-                        status.set_label(&format!("{} entries", store.n_items()));
-                        info!(
-                            generation = event_generation.value(),
-                            entry_count = store.n_items(),
-                            elapsed_ms = started.elapsed().as_millis(),
-                            location = location_uri,
-                            "directory load finished"
-                        );
-                    }
-                    DirectoryEvent::Failed { message, .. } => {
-                        state.cancellable.borrow_mut().take();
-                        status.set_label(&format!("Could not load directory: {message}"));
-                        warn!(
-                            generation = event_generation.value(),
-                            location = location_uri,
-                            error = message,
-                            "directory load failed"
-                        );
-                    }
-                }
-            }
-        ),
-    );
-    *state.cancellable.borrow_mut() = Some(cancellable);
-}
-
-fn connect_selection_status(selection: &gtk::SingleSelection, status: &gtk::Label) {
-    selection.connect_selected_notify(glib::clone!(
-        #[weak]
-        status,
-        move |selection| {
-            let selected = selection.selected();
-            let total = selection.n_items();
-            if selected != gtk::INVALID_LIST_POSITION {
-                status.set_label(&format!("Selected: {} / {total}", selected + 1));
-                debug!(selected_index = selected, "selection changed");
-            }
-        }
-    ));
-}
-
-fn install_keyboard_controller(
-    window: &gtk::ApplicationWindow,
-    selection: &gtk::SingleSelection,
-    list: &gtk::ListView,
-) {
-    let parser = Rc::new(RefCell::new(KeySequenceParser::default()));
-    let controller = gtk::EventControllerKey::new();
-    controller.connect_key_pressed(glib::clone!(
-        #[weak]
-        selection,
-        #[weak]
-        list,
-        #[strong]
-        parser,
-        #[upgrade_or]
-        glib::Propagation::Proceed,
-        move |_, key, _, modifiers| {
-            if modifiers.intersects(
-                gdk::ModifierType::CONTROL_MASK
-                    | gdk::ModifierType::ALT_MASK
-                    | gdk::ModifierType::SUPER_MASK,
-            ) {
-                return glib::Propagation::Proceed;
-            }
-
-            let Some(character) = key.to_unicode() else {
-                return glib::Propagation::Proceed;
-            };
-            match parser.borrow_mut().feed(character, Instant::now()) {
-                KeyResult::Command(command) => {
-                    dispatch(command, &selection, &list);
-                    glib::Propagation::Stop
-                }
-                KeyResult::Pending => glib::Propagation::Stop,
-                KeyResult::Ignored => glib::Propagation::Proceed,
-            }
-        }
-    ));
-    window.add_controller(controller);
-}
-
-fn dispatch(command: AppCommand, selection: &gtk::SingleSelection, list: &gtk::ListView) {
-    let count = selection.n_items();
-    if count == 0 {
-        return;
-    }
-    let current = selection.selected().min(count - 1);
-    let target = match command {
-        AppCommand::NavigateUp => current.saturating_sub(1),
-        AppCommand::NavigateDown => (current + 1).min(count - 1),
-        AppCommand::GoFirst => 0,
-        AppCommand::GoLast => count - 1,
-    };
-
-    selection.set_selected(target);
-    list.scroll_to(target, gtk::ListScrollFlags::FOCUS, None);
-}
-
-fn placeholder(title: &str, description: &str) -> gtk::Widget {
-    let content = gtk::Box::new(gtk::Orientation::Vertical, 8);
-    content.set_margin_top(24);
-    content.set_margin_bottom(24);
-    content.set_margin_start(16);
-    content.set_margin_end(16);
-
-    let heading = gtk::Label::new(Some(title));
-    heading.add_css_class("title-3");
-    heading.set_xalign(0.0);
-    let body = gtk::Label::new(Some(description));
-    body.set_wrap(true);
-    body.set_xalign(0.0);
-    body.add_css_class("dim-label");
-    content.append(&heading);
-    content.append(&body);
-    content.upcast()
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn formats_file_sizes() {
-        assert_eq!(format_size(None), "—");
-        assert_eq!(format_size(Some(512)), "512 B");
-        assert_eq!(format_size(Some(1536)), "1.5 KiB");
-    }
+    size.map_or_else(
+        || "unknown size".to_owned(),
+        |bytes| format!("{bytes} bytes"),
+    )
 }
