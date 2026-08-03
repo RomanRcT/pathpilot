@@ -1,0 +1,22 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/app",
+    "crates/core",
+    "crates/ui-gtk",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "GPL-3.0-or-later"
+rust-version = "1.85"
+
+[workspace.dependencies]
+gio = "0.21"
+glib = "0.21"
+gtk = { package = "gtk4", version = "0.10", features = ["v4_12"] }
+pathpilot-core = { path = "crates/core" }
+pathpilot-ui-gtk = { path = "crates/ui-gtk" }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
