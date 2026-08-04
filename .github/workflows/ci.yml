@@ -20,7 +20,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Install GTK development packages
-        run: sudo apt-get update && sudo apt-get install --yes libgtk-4-dev pkg-config
+        run: sudo apt-get update && sudo apt-get install --yes libgtk-4-dev libvte-2.91-gtk4-dev pkg-config
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable

@@ -24,6 +24,7 @@ use pathpilot_operations::{
 };
 use preview_pane::PreviewPane;
 use tracing::{debug, info, info_span, warn};
+use vte::prelude::*;
 
 #[derive(Clone)]
 enum PlaceTarget {
@@ -82,6 +83,8 @@ struct Browser {
     browse_outer_position: Cell<i32>,
     browse_right_position: Cell<i32>,
     focus_right_position: Cell<i32>,
+    editing: Cell<bool>,
+    editor_previous_layout: Cell<PaneLayout>,
     settings: Rc<RefCell<pathpilot_config::Settings>>,
     settings_path: Option<std::path::PathBuf>,
 }
@@ -116,6 +119,7 @@ impl Browser {
                 "status-find",
                 "status-command",
                 "status-input",
+                "status-edit",
             ] {
                 styled_status_bar.remove_css_class(class);
             }
@@ -127,6 +131,8 @@ impl Browser {
                 "status-command"
             } else if label.label().starts_with("INPUT") {
                 "status-input"
+            } else if label.label().starts_with("EDIT") {
+                "status-edit"
             } else {
                 "status-normal"
             };
@@ -193,6 +199,8 @@ impl Browser {
             browse_outer_position: Cell::new(ui.browse_outer_position),
             browse_right_position: Cell::new(ui.browse_right_position),
             focus_right_position: Cell::new(ui.focus_right_position),
+            editing: Cell::new(false),
+            editor_previous_layout: Cell::new(PaneLayout::Browse),
             settings,
             settings_path,
         })
@@ -1094,6 +1102,111 @@ impl Browser {
         );
     }
 
+    fn connect_editor_exit(self: &Rc<Self>) {
+        let weak = Rc::downgrade(self);
+        self.preview
+            .terminal()
+            .connect_child_exited(move |_, status| {
+                if let Some(browser) = weak.upgrade()
+                    && browser.editing.get()
+                {
+                    browser.finish_embedded_editor(status);
+                }
+            });
+    }
+
+    fn start_embedded_editor(self: &Rc<Self>) {
+        if self.editing.get() {
+            return;
+        }
+        let Some(entry) = self.current.selected_entry() else {
+            self.status.set_label("NORMAL  Nothing selected");
+            return;
+        };
+        if entry.kind == FileKind::Directory {
+            self.status
+                .set_label("NORMAL  Directories cannot be edited as text");
+            return;
+        }
+        if !entry_is_editable_text(&entry) {
+            self.status
+                .set_label("NORMAL  The selected file is not an editable text file");
+            return;
+        }
+        let file = gio::File::for_uri(entry.location.uri());
+        let Some(path) = file.path() else {
+            self.status
+                .set_label("NORMAL  Embedded editing currently supports local files only");
+            return;
+        };
+        let Some(path_text) = path.to_str().map(ToOwned::to_owned) else {
+            self.status
+                .set_label("NORMAL  The selected path is not valid UTF-8");
+            return;
+        };
+        let working_directory = path
+            .parent()
+            .and_then(std::path::Path::to_str)
+            .map(ToOwned::to_owned);
+
+        self.editor_previous_layout.set(self.pane_layout.get());
+        self.pane_layout.set(PaneLayout::PreviewOnly);
+        self.restore_pane_layout();
+        self.editing.set(true);
+        self.preview.show_editor(&entry.display_name);
+        self.status
+            .set_label(&format!("EDIT    {}", entry.display_name));
+
+        let environment = glib::environ();
+        let environment: Vec<_> = environment
+            .iter()
+            .map(|value| value.to_string_lossy().into_owned())
+            .collect();
+        let environment_refs: Vec<_> = environment.iter().map(String::as_str).collect();
+        let weak = Rc::downgrade(self);
+        let callback_path = path_text.clone();
+        self.preview.terminal().spawn_async(
+            vte::PtyFlags::DEFAULT,
+            working_directory.as_deref(),
+            &["nvim", "--", path_text.as_str()],
+            &environment_refs,
+            glib::SpawnFlags::SEARCH_PATH,
+            || {},
+            -1,
+            None::<&gio::Cancellable>,
+            move |result| {
+                if let Err(error) = result
+                    && let Some(browser) = weak.upgrade()
+                {
+                    warn!(%error, file = callback_path, "could not start embedded Neovim");
+                    browser.finish_embedded_editor(-1);
+                    browser.status.set_label(&format!(
+                        "NORMAL  Could not start nvim for {}: {error}",
+                        entry.display_name
+                    ));
+                }
+            },
+        );
+    }
+
+    fn finish_embedded_editor(self: &Rc<Self>, status: i32) {
+        if !self.editing.replace(false) {
+            return;
+        }
+        self.preview.leave_editor();
+        self.pane_layout.set(self.editor_previous_layout.get());
+        self.restore_pane_layout();
+        if let Some(entry) = self.current.selected_entry() {
+            self.preview.invalidate(&entry);
+        }
+        self.selection_changed(self.current.cursor_position());
+        if status != 0 {
+            self.status
+                .set_label(&format!("NORMAL  Neovim exited with status {status}"));
+        }
+        self.current.widget.grab_focus();
+    }
+
     fn open_with_apps(&self, entry: &FileEntry) -> Vec<gio::AppInfo> {
         let Some(content_type) = entry.content_type.as_deref() else {
             return Vec::new();
@@ -1353,6 +1466,7 @@ pub fn build_window(app: &gtk::Application) -> gtk::ApplicationWindow {
     let window_maximized = settings.ui.window_maximized;
     let settings = Rc::new(RefCell::new(settings));
     let browser = Browser::new(initial, settings, settings_path);
+    browser.connect_editor_exit();
 
     let window = gtk::ApplicationWindow::builder()
         .application(app)
@@ -1495,6 +1609,7 @@ fn install_keyboard_controller(
     let mut reference = keymap.command_reference();
     reference.retain(|(keys, _)| !keys.starts_with('g'));
     reference.extend([
+        ("e".to_owned(), "Edit in Neovim"),
         ("f".to_owned(), "Find by name"),
         ("o …".to_owned(), "Open with application"),
         (":".to_owned(), "Command palette"),
@@ -1538,6 +1653,12 @@ fn install_keyboard_controller(
     let open_with_pending = Rc::new(RefCell::new(None::<(FileEntry, Vec<gio::AppInfo>)>));
     let open_with_pending_for_keys = open_with_pending.clone();
     controller.connect_key_pressed(move |_, key, _, modifiers| {
+        if browser
+            .upgrade()
+            .is_some_and(|browser| browser.editing.get())
+        {
+            return glib::Propagation::Proceed;
+        }
         if let Some(browser) = browser.upgrade()
             && *browser.mode.borrow() == AppMode::Command
         {
@@ -1755,6 +1876,13 @@ fn install_keyboard_controller(
                 }
                 return glib::Propagation::Stop;
             }
+            if character == 'e' {
+                parser.borrow_mut().reset();
+                if let Some(browser) = browser.upgrade() {
+                    browser.start_embedded_editor();
+                }
+                return glib::Propagation::Stop;
+            }
             match character {
                 'f' => {
                     if let Some(browser) = browser.upgrade() {
@@ -1906,6 +2034,26 @@ fn unique_destination(parent: &gio::File, display_name: &str) -> Location {
     unreachable!("the unique-name counter is unbounded")
 }
 
+fn entry_is_editable_text(entry: &FileEntry) -> bool {
+    entry
+        .content_type
+        .as_deref()
+        .is_some_and(content_type_is_editable)
+}
+
+fn content_type_is_editable(content_type: &str) -> bool {
+    content_type.starts_with("text/")
+        || matches!(
+            content_type,
+            "application/json"
+                | "application/toml"
+                | "application/xml"
+                | "application/yaml"
+                | "application/x-yaml"
+                | "application/x-zerosize"
+        )
+}
+
 fn selection_summary(entries: &[FileEntry]) -> String {
     const MAX_NAMES: usize = 3;
     let mut names = entries
@@ -1999,7 +2147,7 @@ fn format_permissions(mode: u32) -> String {
 fn install_hint_css() {
     let provider = gtk::CssProvider::new();
     provider.load_from_string(
-        ".interaction-panel-content { background-color: @window_bg_color; border-top: 1px solid alpha(@window_fg_color, 0.16); padding: 10px 16px; } .key-hint-key { font-family: monospace; font-weight: bold; color: @accent_color; } .status-line { padding: 7px 10px; font-family: 'Symbols Nerd Font Mono', 'JetBrainsMono Nerd Font', 'Noto Sans Mono', monospace; } .git-status { font-weight: bold; } .status-normal { background: #42566a; color: #f4f7fa; } .status-visual { background: #8a752e; color: #fff8dc; } .status-find { background: #376b5b; color: #f1fff9; } .status-command { background: #604c7a; color: #faf5ff; } .status-input { background: #496278; color: #f4f8ff; }",
+        ".interaction-panel-content { background-color: @window_bg_color; border-top: 1px solid alpha(@window_fg_color, 0.16); padding: 10px 16px; } .key-hint-key { font-family: monospace; font-weight: bold; color: @accent_color; } .status-line { padding: 7px 10px; font-family: 'Symbols Nerd Font Mono', 'JetBrainsMono Nerd Font', 'Noto Sans Mono', monospace; } .git-status { font-weight: bold; } .status-normal { background: #42566a; color: #f4f7fa; } .status-visual { background: #8a752e; color: #fff8dc; } .status-find { background: #376b5b; color: #f1fff9; } .status-command { background: #604c7a; color: #faf5ff; } .status-input { background: #496278; color: #f4f8ff; } .status-edit { background: #654c3d; color: #fff7ed; }",
     );
     if let Some(display) = gdk::Display::default() {
         gtk::style_context_add_provider_for_display(
@@ -2025,6 +2173,13 @@ mod tests {
             Some(" feature   modified".to_owned())
         );
         assert_eq!(parse_git_status("fatal"), None);
+    }
+
+    #[test]
+    fn embedded_editor_accepts_text_and_rejects_binary_content() {
+        assert!(content_type_is_editable("text/plain"));
+        assert!(content_type_is_editable("application/json"));
+        assert!(!content_type_is_editable("image/png"));
     }
 
     #[test]

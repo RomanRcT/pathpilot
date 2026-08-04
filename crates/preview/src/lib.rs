@@ -8,7 +8,7 @@ use std::{
 };
 
 use gio::prelude::*;
-use pathpilot_core::{FileEntry, Generation, GenerationTracker};
+use pathpilot_core::{FileEntry, Generation, GenerationTracker, Location};
 use tracing::{debug, warn};
 
 #[derive(Clone, Copy, Debug)]
@@ -145,6 +145,10 @@ impl PreviewCache {
         while self.entries.len() > self.capacity {
             self.entries.pop_front();
         }
+    }
+
+    pub fn invalidate(&mut self, location: &Location) {
+        self.entries.retain(|(key, _)| key.uri != location.uri());
     }
 }
 
@@ -747,6 +751,8 @@ mod tests {
 
         assert!(cache.get(&first).is_some());
         assert!(cache.get(&changed).is_none());
+        cache.invalidate(&first.location);
+        assert!(cache.get(&first).is_none());
         cache.insert(
             &changed,
             PreviewContent::Text(TextPreview {
