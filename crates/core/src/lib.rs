@@ -567,6 +567,32 @@ pub enum AppCommand {
     Cut,
     Paste,
     ToggleVisual,
+    CycleLayout,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum PaneLayout {
+    #[default]
+    Browse,
+    FocusPreview,
+    PreviewOnly,
+}
+
+impl PaneLayout {
+    pub fn next(self) -> Self {
+        match self {
+            Self::Browse => Self::FocusPreview,
+            Self::FocusPreview => Self::PreviewOnly,
+            Self::PreviewOnly => Self::Browse,
+        }
+    }
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Browse => "Browse",
+            Self::FocusPreview => "Focus preview",
+            Self::PreviewOnly => "Preview only",
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -621,6 +647,11 @@ pub const PALETTE_COMMANDS: &[PaletteCommand] = &[
         command: AppCommand::ToggleVisual,
         title: "Toggle Visual selection",
         keys: "v",
+    },
+    PaletteCommand {
+        command: AppCommand::CycleLayout,
+        title: "Cycle pane layout",
+        keys: "z",
     },
     PaletteCommand {
         command: AppCommand::GoParent,
@@ -916,6 +947,7 @@ fn default_key_bindings() -> Vec<KeyBinding> {
         ("x", AppCommand::Cut, "cut"),
         ("p", AppCommand::Paste, "paste"),
         ("v", AppCommand::ToggleVisual, "visual selection"),
+        ("z", AppCommand::CycleLayout, "cycle pane layout"),
         ("G", AppCommand::GoLast, "last item"),
         ("gg", AppCommand::GoFirst, "first item"),
         ("af", AppCommand::CreateFile, "create file"),
@@ -1215,6 +1247,14 @@ mod tests {
         assert!(!mode.begin_find());
         assert!(mode.cancel());
         assert_eq!(mode, AppMode::Normal);
+    }
+
+    #[test]
+    fn pane_layout_cycles_through_all_views() {
+        let layout = PaneLayout::default();
+        assert_eq!(layout.next(), PaneLayout::FocusPreview);
+        assert_eq!(layout.next().next(), PaneLayout::PreviewOnly);
+        assert_eq!(layout.next().next().next(), PaneLayout::Browse);
     }
 
     #[test]

@@ -16,7 +16,7 @@ use gtk::{gdk, gio, glib, prelude::*};
 use pathpilot_core::{
     AppCommand, AppMode, ClipboardAction, ClipboardItem, CommandPalette, FileEntry, FileKind,
     FilenameFind, InputModeKind, KeyResult, KeySequenceParser, Location, NavigationState,
-    OperationClipboard, OperationId,
+    OperationClipboard, OperationId, PaneLayout,
 };
 use pathpilot_operations::{
     BatchOperationResult, OperationHandle, OperationResult, TransferSpec, copy_items,
@@ -47,10 +47,21 @@ struct Browser {
     active_operation: RefCell<Option<OperationHandle>>,
     git_summary: RefCell<Option<String>>,
     git_probe: Cell<u64>,
+    pane_layout: Cell<PaneLayout>,
+    layout_panes: RefCell<Option<(gtk::Paned, gtk::Paned)>>,
+    browse_outer_position: Cell<i32>,
+    browse_right_position: Cell<i32>,
+    focus_right_position: Cell<i32>,
+    settings: Rc<RefCell<pathpilot_config::Settings>>,
+    settings_path: Option<std::path::PathBuf>,
 }
 
 impl Browser {
-    fn new(initial: Location) -> Rc<Self> {
+    fn new(
+        initial: Location,
+        settings: Rc<RefCell<pathpilot_config::Settings>>,
+        settings_path: Option<std::path::PathBuf>,
+    ) -> Rc<Self> {
         let status = gtk::Label::builder()
             .label("NORMAL")
             .xalign(0.0)
@@ -113,6 +124,7 @@ impl Browser {
         input_bar.append(&input_title);
         input_bar.append(&input_entry);
         input_bar.append(&input_help);
+        let ui = settings.borrow().ui.clone();
         Rc::new(Self {
             navigation: RefCell::new(NavigationState::new(initial)),
             parent: DirectoryPane::new("Parent"),
@@ -142,6 +154,17 @@ impl Browser {
             active_operation: RefCell::new(None),
             git_summary: RefCell::new(None),
             git_probe: Cell::new(0),
+            pane_layout: Cell::new(match ui.pane_layout.as_str() {
+                "focus_preview" => PaneLayout::FocusPreview,
+                "preview_only" => PaneLayout::PreviewOnly,
+                _ => PaneLayout::Browse,
+            }),
+            layout_panes: RefCell::new(None),
+            browse_outer_position: Cell::new(ui.browse_outer_position),
+            browse_right_position: Cell::new(ui.browse_right_position),
+            focus_right_position: Cell::new(ui.focus_right_position),
+            settings,
+            settings_path,
         })
     }
 
@@ -262,6 +285,7 @@ impl Browser {
                     | AppCommand::Cut
                     | AppCommand::Trash
                     | AppCommand::PermanentDelete
+                    | AppCommand::CycleLayout
                     | AppCommand::ToggleVisual
             )
         {
@@ -294,6 +318,7 @@ impl Browser {
             AppCommand::Cut => self.store_operation_clipboard(ClipboardAction::Move),
             AppCommand::Paste => self.paste_operation_clipboard(window),
             AppCommand::ToggleVisual => self.toggle_visual(),
+            AppCommand::CycleLayout => self.cycle_pane_layout(),
             AppCommand::Quit => unreachable!("quit handled before navigation dispatch"),
         }
         false
@@ -309,6 +334,97 @@ impl Browser {
             self.current.begin_visual();
             self.status
                 .set_label("VISUAL  1 selected · j/k extend · v/Escape finish");
+        }
+    }
+
+    fn cycle_pane_layout(&self) {
+        let Some((outer, right)) = self.layout_panes.borrow().as_ref().cloned() else {
+            return;
+        };
+        if self.pane_layout.get() == PaneLayout::Browse {
+            self.browse_outer_position.set(outer.position());
+            self.browse_right_position.set(right.position());
+        } else if self.pane_layout.get() == PaneLayout::FocusPreview {
+            self.focus_right_position.set(right.position());
+        }
+        let layout = self.pane_layout.get().next();
+        self.pane_layout.set(layout);
+        match layout {
+            PaneLayout::Browse => {
+                self.parent.widget.set_visible(true);
+                self.current.widget.set_visible(true);
+                outer.set_position(self.browse_outer_position.get());
+                right.set_position(self.browse_right_position.get());
+            }
+            PaneLayout::FocusPreview => {
+                self.parent.widget.set_visible(false);
+                self.current.widget.set_visible(true);
+                right.set_position(self.focus_right_position.get());
+            }
+            PaneLayout::PreviewOnly => {
+                self.parent.widget.set_visible(false);
+                self.current.widget.set_visible(false);
+            }
+        }
+        self.status
+            .set_label(&format!("NORMAL  Layout: {}", layout.label()));
+    }
+
+    fn restore_pane_layout(&self) {
+        let layout = self.pane_layout.get();
+        let Some((outer, right)) = self.layout_panes.borrow().as_ref().cloned() else {
+            return;
+        };
+        outer.set_position(self.browse_outer_position.get());
+        match layout {
+            PaneLayout::Browse => {
+                self.parent.widget.set_visible(true);
+                self.current.widget.set_visible(true);
+                right.set_position(self.browse_right_position.get());
+            }
+            PaneLayout::FocusPreview => {
+                self.parent.widget.set_visible(false);
+                self.current.widget.set_visible(true);
+                right.set_position(self.focus_right_position.get());
+            }
+            PaneLayout::PreviewOnly => {
+                self.parent.widget.set_visible(false);
+                self.current.widget.set_visible(false);
+            }
+        }
+    }
+
+    fn persist_window_state(&self, window: &gtk::ApplicationWindow) {
+        if let Some((outer, right)) = self.layout_panes.borrow().as_ref() {
+            match self.pane_layout.get() {
+                PaneLayout::Browse => {
+                    self.browse_outer_position.set(outer.position());
+                    self.browse_right_position.set(right.position());
+                }
+                PaneLayout::FocusPreview => self.focus_right_position.set(right.position()),
+                PaneLayout::PreviewOnly => {}
+            }
+        }
+        let mut settings = self.settings.borrow_mut();
+        if !window.is_maximized() {
+            settings.ui.window_width = window.width();
+            settings.ui.window_height = window.height();
+        }
+        settings.ui.window_maximized = window.is_maximized();
+        settings.ui.last_location = Some(self.navigation.borrow().current().uri().to_owned());
+        settings.ui.pane_layout = match self.pane_layout.get() {
+            PaneLayout::Browse => "browse",
+            PaneLayout::FocusPreview => "focus_preview",
+            PaneLayout::PreviewOnly => "preview_only",
+        }
+        .to_owned();
+        settings.ui.browse_outer_position = self.browse_outer_position.get();
+        settings.ui.browse_right_position = self.browse_right_position.get();
+        settings.ui.focus_right_position = self.focus_right_position.get();
+        if let Some(path) = self.settings_path.as_deref()
+            && let Err(error) = pathpilot_config::save_settings(path, &settings)
+        {
+            warn!(%error, "could not persist window state");
         }
     }
 
@@ -1040,15 +1156,39 @@ impl Browser {
 pub fn build_window(app: &gtk::Application) -> gtk::ApplicationWindow {
     let startup_span = info_span!("build_window");
     let _guard = startup_span.enter();
-    let initial = Location::new(gio::File::for_path(".").uri());
-    let browser = Browser::new(initial);
+    let settings_path = pathpilot_config::settings_path();
+    let (settings, warning) = pathpilot_config::load_settings(settings_path.as_deref());
+    if let Some(error) = warning {
+        warn!(%error, "invalid settings; using defaults");
+    }
+    let fallback = || Location::new(gio::File::for_path(".").uri());
+    let initial = settings
+        .ui
+        .last_location
+        .as_ref()
+        .map_or_else(fallback, |uri| {
+            let file = gio::File::for_uri(uri);
+            if file.query_exists(None::<&gio::Cancellable>) {
+                Location::new(uri.clone())
+            } else {
+                fallback()
+            }
+        });
+    let window_width = settings.ui.window_width;
+    let window_height = settings.ui.window_height;
+    let window_maximized = settings.ui.window_maximized;
+    let settings = Rc::new(RefCell::new(settings));
+    let browser = Browser::new(initial, settings, settings_path);
 
     let window = gtk::ApplicationWindow::builder()
         .application(app)
         .title("PathPilot — Preview Prototype")
-        .default_width(1400)
-        .default_height(760)
+        .default_width(window_width)
+        .default_height(window_height)
         .build();
+    if window_maximized {
+        window.maximize();
+    }
     let columns = three_column_layout(&browser);
     let root = gtk::Box::new(gtk::Orientation::Vertical, 0);
     root.append(&browser.location_label);
@@ -1077,11 +1217,14 @@ pub fn build_window(app: &gtk::Application) -> gtk::ApplicationWindow {
     browser.connect();
     install_keyboard_controller(&window, Rc::downgrade(&browser), &key_hints);
     let close_browser = browser.clone();
+    let close_window = window.clone();
     window.connect_close_request(move |_| {
+        close_browser.persist_window_state(&close_window);
         close_browser.cancel();
         glib::Propagation::Proceed
     });
     browser.initial_load();
+    browser.restore_pane_layout();
 
     info!("window constructed");
     window
@@ -1102,6 +1245,7 @@ fn three_column_layout(browser: &Browser) -> gtk::Paned {
     right.set_position(560);
     right.set_resize_start_child(true);
     right.set_resize_end_child(true);
+    *browser.layout_panes.borrow_mut() = Some((outer.clone(), right));
     outer
 }
 
@@ -1140,13 +1284,16 @@ fn install_keyboard_controller(
         ("F1".to_owned(), "Hide hints"),
     ]);
     let command_reference = Rc::new(reference);
-    let settings_path = pathpilot_config::settings_path();
-    let (settings, settings_warning) = pathpilot_config::load_settings(settings_path.as_deref());
-    if let Some(error) = settings_warning {
-        warn!(%error, "invalid settings; using defaults");
-    }
-    let hints_initially_enabled = settings.ui.hints_enabled;
-    let settings = Rc::new(RefCell::new(settings));
+    let (settings, settings_path) = browser.upgrade().map_or_else(
+        || {
+            (
+                Rc::new(RefCell::new(pathpilot_config::Settings::default())),
+                None,
+            )
+        },
+        |browser| (browser.settings.clone(), browser.settings_path.clone()),
+    );
+    let hints_initially_enabled = settings.borrow().ui.hints_enabled;
     let parser = Rc::new(RefCell::new(KeySequenceParser::with_bindings(
         Duration::MAX,
         keymap.bindings().to_vec(),

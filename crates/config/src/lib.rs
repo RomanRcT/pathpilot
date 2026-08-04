@@ -81,6 +81,14 @@ pub struct UiSettings {
     pub confirm_permanent_delete: bool,
     pub preview_delay_ms: u64,
     pub compact_rows: bool,
+    pub window_width: i32,
+    pub window_height: i32,
+    pub window_maximized: bool,
+    pub last_location: Option<String>,
+    pub pane_layout: String,
+    pub browse_outer_position: i32,
+    pub browse_right_position: i32,
+    pub focus_right_position: i32,
 }
 
 impl Default for UiSettings {
@@ -90,6 +98,14 @@ impl Default for UiSettings {
             confirm_permanent_delete: true,
             preview_delay_ms: 75,
             compact_rows: true,
+            window_width: 1400,
+            window_height: 760,
+            window_maximized: false,
+            last_location: None,
+            pane_layout: "browse".to_owned(),
+            browse_outer_position: 360,
+            browse_right_position: 560,
+            focus_right_position: 460,
         }
     }
 }
@@ -187,6 +203,7 @@ fn command(name: &str) -> Option<AppCommand> {
         "cut" => AppCommand::Cut,
         "paste" => AppCommand::Paste,
         "visual" => AppCommand::ToggleVisual,
+        "cycle_layout" => AppCommand::CycleLayout,
         _ => return None,
     })
 }
@@ -209,6 +226,7 @@ fn label(command: AppCommand) -> &'static str {
         AppCommand::Cut => "Cut",
         AppCommand::Paste => "Paste",
         AppCommand::ToggleVisual => "Visual selection",
+        AppCommand::CycleLayout => "Cycle pane layout",
     }
 }
 
