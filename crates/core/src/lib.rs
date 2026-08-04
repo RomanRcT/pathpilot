@@ -265,12 +265,54 @@ impl TextInputMode {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct VisualSelection {
+    anchor: u32,
+    cursor: u32,
+}
+
+impl VisualSelection {
+    pub fn new(position: u32) -> Self {
+        Self {
+            anchor: position,
+            cursor: position,
+        }
+    }
+
+    pub fn anchor(self) -> u32 {
+        self.anchor
+    }
+
+    pub fn cursor(self) -> u32 {
+        self.cursor
+    }
+
+    pub fn set_cursor(&mut self, position: u32, item_count: u32) {
+        if item_count > 0 {
+            self.cursor = position.min(item_count - 1);
+        }
+    }
+
+    pub fn range(self) -> std::ops::RangeInclusive<u32> {
+        self.anchor.min(self.cursor)..=self.anchor.max(self.cursor)
+    }
+
+    pub fn len(self) -> u32 {
+        self.anchor.abs_diff(self.cursor) + 1
+    }
+
+    pub fn is_empty(self) -> bool {
+        false
+    }
+}
+
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub enum AppMode {
     #[default]
     Normal,
     Find,
     TextInput(TextInputMode),
+    Visual(VisualSelection),
 }
 
 impl AppMode {
@@ -288,6 +330,28 @@ impl AppMode {
         }
         *self = Self::TextInput(TextInputMode::new(kind, initial));
         true
+    }
+
+    pub fn begin_visual(&mut self, position: u32) -> bool {
+        if *self != Self::Normal {
+            return false;
+        }
+        *self = Self::Visual(VisualSelection::new(position));
+        true
+    }
+
+    pub fn visual(&self) -> Option<VisualSelection> {
+        match self {
+            Self::Visual(selection) => Some(*selection),
+            _ => None,
+        }
+    }
+
+    pub fn visual_mut(&mut self) -> Option<&mut VisualSelection> {
+        match self {
+            Self::Visual(selection) => Some(selection),
+            _ => None,
+        }
     }
 
     pub fn text_input(&self) -> Option<&TextInputMode> {
@@ -486,6 +550,7 @@ pub enum AppCommand {
     Copy,
     Cut,
     Paste,
+    ToggleVisual,
 }
 
 /// Result of feeding a key to the normal-mode parser.
@@ -556,6 +621,10 @@ pub const COMMAND_REFERENCE: &[CommandHint] = &[
     CommandHint {
         keys: "p / Ctrl+V",
         label: "Paste",
+    },
+    CommandHint {
+        keys: "v",
+        label: "Visual selection",
     },
     CommandHint {
         keys: "d / Delete",
@@ -629,6 +698,7 @@ impl KeySequenceParser {
             'y' => KeyResult::Command(AppCommand::Copy),
             'x' => KeyResult::Command(AppCommand::Cut),
             'p' => KeyResult::Command(AppCommand::Paste),
+            'v' => KeyResult::Command(AppCommand::ToggleVisual),
             'G' => KeyResult::Command(AppCommand::GoLast),
             'g' | 'a' | 'd' => self.begin_sequence(key, now),
             _ => KeyResult::Ignored,
@@ -762,6 +832,10 @@ mod tests {
         assert_eq!(parser.feed('y', now), KeyResult::Command(AppCommand::Copy));
         assert_eq!(parser.feed('x', now), KeyResult::Command(AppCommand::Cut));
         assert_eq!(parser.feed('p', now), KeyResult::Command(AppCommand::Paste));
+        assert_eq!(
+            parser.feed('v', now),
+            KeyResult::Command(AppCommand::ToggleVisual)
+        );
     }
 
     #[test]
@@ -919,6 +993,31 @@ mod tests {
         assert!(mode.cancel());
         assert_eq!(mode, AppMode::Normal);
         assert!(!mode.cancel());
+    }
+
+    #[test]
+    fn visual_selection_tracks_an_inclusive_range_in_both_directions() {
+        let mut mode = AppMode::default();
+        assert!(mode.begin_visual(4));
+        let selection = mode.visual().expect("visual selection");
+        assert_eq!(selection.anchor(), 4);
+        assert_eq!(selection.range(), 4..=4);
+
+        mode.visual_mut()
+            .expect("visual selection")
+            .set_cursor(1, 10);
+        let selection = mode.visual().expect("visual selection");
+        assert_eq!(selection.cursor(), 1);
+        assert_eq!(selection.range(), 1..=4);
+        assert_eq!(selection.len(), 4);
+
+        mode.visual_mut()
+            .expect("visual selection")
+            .set_cursor(99, 10);
+        let selection = mode.visual().expect("visual selection");
+        assert_eq!(selection.cursor(), 9);
+        assert_eq!(selection.range(), 4..=9);
+        assert_eq!(selection.len(), 6);
     }
 
     #[test]

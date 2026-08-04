@@ -29,6 +29,7 @@ The project is in early development. The initial milestones, Phase 2 preview pip
 - Separately confirmed permanent deletion of files and non-empty directory trees.
 - Explicit Normal, Find, and integrated Text Input modes.
 - In-window create and rename editor with cursor movement, selection, clipboard support, and validation.
+- Visual mode with anchored range selection and a separate preview cursor.
 
 The application opens the directory from which it is started. Use `l` or double click to enter a directory and `h` to return to its parent.
 

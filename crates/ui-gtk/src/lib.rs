@@ -106,9 +106,9 @@ impl Browser {
         let weak = Rc::downgrade(self);
         self.current
             .selection
-            .connect_selected_notify(move |selection| {
+            .connect_selection_changed(move |_, _, _| {
                 if let Some(browser) = weak.upgrade() {
-                    browser.selection_changed(selection.selected());
+                    browser.selection_changed(browser.current.cursor_position());
                 }
             });
 
@@ -150,16 +150,29 @@ impl Browser {
 
     fn selection_changed(self: &Rc<Self>, selected: u32) {
         let total = self.current.selection.n_items();
-        if selected == gtk::INVALID_LIST_POSITION {
+        if total == 0 || selected == gtk::INVALID_LIST_POSITION {
             self.status.set_label("NORMAL  No selection");
             self.preview.show_empty();
             return;
         }
-        let clipboard = self.clipboard_status();
-        self.status.set_label(&format!(
-            "NORMAL  Selected: {} / {total}  h/j/k/l navigate · q quit{clipboard}",
-            selected + 1,
-        ));
+        let visual_count = {
+            let mut mode = self.mode.borrow_mut();
+            mode.visual_mut().map(|visual| {
+                visual.set_cursor(selected, total);
+                self.current.selected_entries().len()
+            })
+        };
+        if let Some(count) = visual_count {
+            self.status.set_label(&format!(
+                "VISUAL  {count} selected · j/k extend · v/Escape finish"
+            ));
+        } else {
+            let clipboard = self.clipboard_status();
+            self.status.set_label(&format!(
+                "NORMAL  Selected: {} / {total}  h/j/k/l navigate · q quit{clipboard}",
+                selected + 1,
+            ));
+        }
         self.update_preview();
     }
 
@@ -182,6 +195,20 @@ impl Browser {
     fn dispatch(self: &Rc<Self>, command: AppCommand, window: &gtk::ApplicationWindow) -> bool {
         if command == AppCommand::Quit {
             return true;
+        }
+        if self.mode.borrow().visual().is_some()
+            && !matches!(
+                command,
+                AppCommand::NavigateUp
+                    | AppCommand::NavigateDown
+                    | AppCommand::GoFirst
+                    | AppCommand::GoLast
+                    | AppCommand::ToggleVisual
+            )
+        {
+            self.status
+                .set_label("VISUAL  Finish selection before running this command");
+            return false;
         }
         match command {
             AppCommand::NavigateUp => self.move_cursor(-1),
@@ -207,9 +234,33 @@ impl Browser {
             AppCommand::Copy => self.store_operation_clipboard(ClipboardAction::Copy),
             AppCommand::Cut => self.store_operation_clipboard(ClipboardAction::Move),
             AppCommand::Paste => self.paste_operation_clipboard(window),
+            AppCommand::ToggleVisual => self.toggle_visual(),
             AppCommand::Quit => unreachable!("quit handled before navigation dispatch"),
         }
         false
+    }
+
+    fn toggle_visual(self: &Rc<Self>) {
+        if self.mode.borrow().visual().is_some() {
+            self.leave_visual();
+            return;
+        }
+        let position = self.current.cursor_position();
+        if self.current.selection.n_items() > 0 && self.mode.borrow_mut().begin_visual(position) {
+            self.current.begin_visual();
+            self.status
+                .set_label("VISUAL  1 selected · j/k extend · v/Escape finish");
+        }
+    }
+
+    fn leave_visual(self: &Rc<Self>) -> bool {
+        if self.mode.borrow().visual().is_none() {
+            return false;
+        }
+        self.mode.borrow_mut().cancel();
+        self.current.end_visual();
+        self.selection_changed(self.current.cursor_position());
+        true
     }
 
     fn operation_id(&self) -> OperationId {
@@ -364,12 +415,7 @@ impl Browser {
         if !self.mode.borrow_mut().begin_find() {
             return;
         }
-        let position = self.current.selection.selected();
-        let position = if position == gtk::INVALID_LIST_POSITION {
-            0
-        } else {
-            position
-        };
+        let position = self.current.cursor_position();
         self.find.borrow_mut().start(position);
         self.status.set_label("FIND  Type a filename");
     }
@@ -642,7 +688,7 @@ impl Browser {
         if count == 0 {
             return;
         }
-        let current = self.current.selection.selected().min(count - 1);
+        let current = self.current.cursor_position().min(count - 1);
         let target = if offset < 0 {
             current.saturating_sub(offset.unsigned_abs())
         } else {
@@ -688,10 +734,11 @@ impl Browser {
     fn navigate_to(self: &Rc<Self>, location: Location, preferred: Option<Location>) {
         self.find.borrow_mut().reset();
         *self.mode.borrow_mut() = AppMode::Normal;
+        self.current.end_visual();
         self.input_source.borrow_mut().take();
         self.hide_input_bar();
-        let selected = self.current.selection.selected();
-        if selected != gtk::INVALID_LIST_POSITION {
+        let selected = self.current.cursor_position();
+        if self.current.selection.n_items() > 0 {
             self.navigation.borrow_mut().remember_cursor(selected);
         }
         let restored = self.navigation.borrow_mut().navigate_to(location);
@@ -723,7 +770,7 @@ impl Browser {
                     .current
                     .select_position(restored_position.unwrap_or(0));
             }
-            browser.selection_changed(browser.current.selection.selected());
+            browser.selection_changed(browser.current.cursor_position());
         });
 
         let file = gio::File::for_uri(location.uri());
@@ -819,13 +866,10 @@ fn three_column_layout(browser: &Browser) -> gtk::Paned {
 
 fn connect_activation(pane: &DirectoryPane, browser: Weak<Browser>) {
     let list = pane.list.clone();
-    let selection = pane.selection.clone();
+    let pane = pane.clone();
     list.connect_activate(move |_, position| {
-        selection.set_selected(position);
-        let entry = selection
-            .selected_item()
-            .and_downcast::<glib::BoxedAnyObject>()
-            .map(|object| object.borrow::<FileEntry>().clone());
+        pane.select_position(position);
+        let entry = pane.selected_entry();
         if let (Some(browser), Some(entry)) = (browser.upgrade(), entry) {
             browser.open_entry(entry);
         }
@@ -889,6 +933,13 @@ fn install_keyboard_controller(
         }
 
         if key == gdk::Key::Escape {
+            if browser
+                .upgrade()
+                .is_some_and(|browser| browser.leave_visual())
+            {
+                restore_hint_overlay(&key_hints, hints_enabled.get());
+                return glib::Propagation::Stop;
+            }
             if browser
                 .upgrade()
                 .is_some_and(|browser| browser.cancel_active_operation())
