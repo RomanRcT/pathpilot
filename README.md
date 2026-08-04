@@ -31,6 +31,7 @@ The project is in early development. The initial milestones, Phase 2 preview pip
 - In-window create and rename editor with cursor movement, selection, clipboard support, and validation.
 - Visual mode with anchored range selection and a separate preview cursor.
 - Visual selections can be copied, moved, trashed, or permanently deleted as one cancellable batch.
+- Searchable command palette opened with `:` or `Ctrl+Shift+P`.
 
 The application opens the directory from which it is started. Use `l` or double click to enter a directory and `h` to return to its parent.
 
