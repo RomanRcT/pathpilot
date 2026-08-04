@@ -1,12 +1,13 @@
 # PathPilot
 
-PathPilot is an experimental keyboard-first graphical file manager for Linux. The current code implements the initial milestones, the Phase 2 preview pipeline, and the Phase 3 file-operation foundation described in [`pathpilot_project_plan.md`](pathpilot_project_plan.md). It requires GTK 4.12 or newer.
+PathPilot is an experimental keyboard-first graphical file manager for Linux, built with Rust, GTK 4, and GIO. It combines ranger-style three-column navigation, Vim-inspired controls, conventional mouse interaction, and responsive file previews.
+
+The project is in early development. The initial milestones, Phase 2 preview pipeline, and Phase 3 file-operation foundation are implemented. See [`pathpilot_project_plan.md`](pathpilot_project_plan.md) for the complete product plan. PathPilot currently requires GTK 4.12 or newer.
 
 ## Current features
 
-- Three resizable columns.
-- A virtualized `GtkListView` populated asynchronously from the working directory.
 - Three live parent/current/preview columns with independently cancelable models.
+- Virtualized `GtkListView` instances populated asynchronously through GIO.
 - Batched GIO enumeration with cancellation and stale-generation rejection.
 - Name, native content-type icon, kind, size, and modified-time columns.
 - Case-insensitive name sorting with directories first.
@@ -19,7 +20,6 @@ PathPilot is an experimental keyboard-first graphical file manager for Linux. Th
 - Source previews are syntax-highlighted off the GTK thread with `syntect`.
 - Markdown headings, emphasis, lists, tables, links, and code are rendered without executing HTML or loading remote content.
 - A 24-entry LRU preview cache is invalidated by URI, size, and modification time.
-- Normal-mode navigation with `j`, `k`, `gg`, and `G`.
 - A status line with the selected index and entry count.
 - Structured startup, model creation, and selection tracing.
 - GTK-independent commands and key-sequence parsing.
@@ -29,6 +29,25 @@ PathPilot is an experimental keyboard-first graphical file manager for Linux. Th
 - Separately confirmed permanent deletion of files and non-empty directory trees.
 
 The application opens the directory from which it is started. Use `l` or double click to enter a directory and `h` to return to its parent.
+
+## Current limitations
+
+- Local filesystem browsing only.
+- Single-item operations only; multi-selection will follow the Phase 4 visual mode.
+- No tabs, configurable keymap, filtering, or hidden-file toggle yet.
+- No PDF, archive, office document, audio, or video previews.
+- No remote filesystem backends or plugin API.
+- Fedora and Wayland are the primary development targets; other Linux environments are not yet validated.
+
+## Roadmap
+
+The next major steps are:
+
+1. Complete modal input handling, visual selection, command palette, and TOML keymap configuration.
+2. Extend visual selection into safe multi-item operation batches.
+3. Add drag-and-drop, open-with integration, accessibility, diagnostics, and Fedora packaging.
+
+Detailed phases, performance targets, and exit criteria are maintained in [`pathpilot_project_plan.md`](pathpilot_project_plan.md).
 
 ## Fedora development setup
 
