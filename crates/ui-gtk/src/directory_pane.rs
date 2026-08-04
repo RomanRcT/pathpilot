@@ -1,5 +1,5 @@
 use std::{
-    cell::RefCell,
+    cell::{Cell, RefCell},
     rc::Rc,
     time::{Instant, SystemTime, UNIX_EPOCH},
 };
@@ -19,11 +19,14 @@ struct LoadState {
 pub struct DirectoryPane {
     pub widget: gtk::Box,
     pub list: gtk::ListView,
-    pub selection: gtk::SingleSelection,
+    pub selection: gtk::MultiSelection,
     store: gio::ListStore,
     title: gtk::Label,
     status: gtk::Label,
     load_state: Rc<LoadState>,
+    cursor: Rc<Cell<u32>>,
+    visual_anchor: Rc<Cell<Option<u32>>>,
+    changing_selection: Rc<Cell<bool>>,
 }
 
 impl DirectoryPane {
@@ -41,9 +44,34 @@ impl DirectoryPane {
                 .into()
         });
         let sorted = gtk::SortListModel::new(Some(store.clone()), Some(sorter));
-        let selection = gtk::SingleSelection::new(Some(sorted));
-        selection.set_autoselect(true);
-        selection.set_can_unselect(false);
+        let selection = gtk::MultiSelection::new(Some(sorted));
+        let cursor = Rc::new(Cell::new(0));
+        let visual_anchor = Rc::new(Cell::new(None::<u32>));
+        let changing_selection = Rc::new(Cell::new(false));
+        selection.connect_selection_changed({
+            let cursor = cursor.clone();
+            let visual_anchor = visual_anchor.clone();
+            let changing_selection = changing_selection.clone();
+            move |selection, position, n_items| {
+                if changing_selection.get() || selection.n_items() == 0 || n_items == 0 {
+                    return;
+                }
+                let end = position.saturating_add(n_items).min(selection.n_items());
+                let candidate = (position..end)
+                    .find(|position| selection.is_selected(*position))
+                    .unwrap_or(position)
+                    .min(selection.n_items() - 1);
+                cursor.set(candidate);
+                changing_selection.set(true);
+                if let Some(anchor) = visual_anchor.get() {
+                    let start = anchor.min(candidate);
+                    selection.select_range(start, anchor.abs_diff(candidate) + 1, true);
+                } else {
+                    selection.select_item(candidate, true);
+                }
+                changing_selection.set(false);
+            }
+        });
 
         let factory = gtk::SignalListItemFactory::new();
         factory.connect_setup(|_, item| {
@@ -94,6 +122,9 @@ impl DirectoryPane {
             title,
             status,
             load_state: Rc::new(LoadState::default()),
+            cursor,
+            visual_anchor,
+            changing_selection,
         }
     }
 
@@ -189,9 +220,27 @@ impl DirectoryPane {
 
     pub fn selected_entry(&self) -> Option<FileEntry> {
         self.selection
-            .selected_item()
+            .item(self.cursor_position())
             .and_downcast::<glib::BoxedAnyObject>()
             .map(|object| object.borrow::<FileEntry>().clone())
+    }
+
+    pub fn selected_entries(&self) -> Vec<FileEntry> {
+        (0..self.selection.n_items())
+            .filter(|position| self.selection.is_selected(*position))
+            .filter_map(|position| {
+                self.selection
+                    .item(position)
+                    .and_downcast::<glib::BoxedAnyObject>()
+                    .map(|object| object.borrow::<FileEntry>().clone())
+            })
+            .collect()
+    }
+
+    pub fn cursor_position(&self) -> u32 {
+        self.cursor
+            .get()
+            .min(self.selection.n_items().saturating_sub(1))
     }
 
     pub fn names(&self) -> Vec<String> {
@@ -207,10 +256,37 @@ impl DirectoryPane {
 
     pub fn select_position(&self, position: u32) {
         if position < self.selection.n_items() {
-            self.selection.set_selected(position);
+            self.cursor.set(position);
+            self.apply_selection();
             self.list
                 .scroll_to(position, gtk::ListScrollFlags::FOCUS, None);
         }
+    }
+
+    pub fn begin_visual(&self) {
+        self.visual_anchor.set(Some(self.cursor_position()));
+        self.apply_selection();
+    }
+
+    pub fn end_visual(&self) {
+        self.visual_anchor.set(None);
+        self.apply_selection();
+    }
+
+    fn apply_selection(&self) {
+        if self.selection.n_items() == 0 {
+            return;
+        }
+        let cursor = self.cursor_position();
+        self.changing_selection.set(true);
+        if let Some(anchor) = self.visual_anchor.get() {
+            let start = anchor.min(cursor);
+            self.selection
+                .select_range(start, anchor.abs_diff(cursor) + 1, true);
+        } else {
+            self.selection.select_item(cursor, true);
+        }
+        self.changing_selection.set(false);
     }
 
     pub fn select_location(&self, location: &Location) -> bool {

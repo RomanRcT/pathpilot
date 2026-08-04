@@ -7,10 +7,11 @@ The first Phase 4 slice replaces implicit GTK keyboard branches with a GTK-indep
 - `Normal` dispatches navigation and operation commands.
 - `Find` owns incremental filename matching until Enter or Escape.
 - `TextInput` owns text entry for create-file, create-directory, and rename actions.
+- `Visual` owns an anchored, inclusive selection range while keeping one active cursor.
 
 Transitions are explicit and mutually exclusive. A new mode cannot start while another mode is active. Enter completes the current mode only after validation; Escape returns to Normal without performing the pending action. Navigation also resets transient input state.
 
-Visual and command modes will extend the same enum in later Phase 4 slices.
+Command mode will extend the same enum in a later Phase 4 slice.
 
 ## Integrated text input
 
