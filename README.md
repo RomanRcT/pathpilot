@@ -27,6 +27,8 @@ The project is in early development. The initial milestones, Phase 2 preview pip
 - Recursive directory copy with progress, cancellation, partial-result cleanup, and no silent overwrites.
 - Explicit “Keep Both” conflict handling with unique destination names.
 - Separately confirmed permanent deletion of files and non-empty directory trees.
+- Explicit Normal, Find, and integrated Text Input modes.
+- In-window create and rename input with validation instead of text-entry dialogs.
 
 The application opens the directory from which it is started. Use `l` or double click to enter a directory and `h` to return to its parent.
 

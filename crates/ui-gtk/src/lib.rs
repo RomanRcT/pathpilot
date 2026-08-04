@@ -12,8 +12,9 @@ use std::{
 use directory_pane::DirectoryPane;
 use gtk::{gdk, gio, glib, prelude::*};
 use pathpilot_core::{
-    AppCommand, COMMAND_REFERENCE, ClipboardAction, FileEntry, FileKind, FilenameFind, KeyResult,
-    KeySequenceParser, Location, NavigationState, OperationClipboard, OperationId,
+    AppCommand, AppMode, COMMAND_REFERENCE, ClipboardAction, FileEntry, FileKind, FilenameFind,
+    InputModeKind, KeyResult, KeySequenceParser, Location, NavigationState, OperationClipboard,
+    OperationId,
 };
 use pathpilot_operations::{
     OperationHandle, OperationResult, copy_item_with_progress, create_directory, create_file,
@@ -31,6 +32,8 @@ struct Browser {
     status: gtk::Label,
     next_operation_id: Cell<u64>,
     find: RefCell<FilenameFind>,
+    mode: RefCell<AppMode>,
+    input_source: RefCell<Option<Location>>,
     operation_clipboard: RefCell<Option<OperationClipboard>>,
     active_operation: RefCell<Option<OperationHandle>>,
 }
@@ -60,6 +63,8 @@ impl Browser {
                 .build(),
             next_operation_id: Cell::new(1),
             find: RefCell::new(FilenameFind::default()),
+            mode: RefCell::new(AppMode::default()),
+            input_source: RefCell::new(None),
             operation_clipboard: RefCell::new(None),
             active_operation: RefCell::new(None),
         })
@@ -134,9 +139,9 @@ impl Browser {
                 }
             }
             AppCommand::GoParent => self.go_parent(),
-            AppCommand::CreateFile => self.prompt_create(window, false),
-            AppCommand::CreateDirectory => self.prompt_create(window, true),
-            AppCommand::Rename => self.prompt_rename(window),
+            AppCommand::CreateFile => self.start_create(false),
+            AppCommand::CreateDirectory => self.start_create(true),
+            AppCommand::Rename => self.start_rename(),
             AppCommand::Trash => self.confirm_trash(window),
             AppCommand::PermanentDelete => self.confirm_permanent_delete(window),
             AppCommand::Copy => self.store_operation_clipboard(ClipboardAction::Copy),
@@ -296,6 +301,9 @@ impl Browser {
     }
 
     fn start_find(&self) {
+        if !self.mode.borrow_mut().begin_find() {
+            return;
+        }
         let position = self.current.selection.selected();
         let position = if position == gtk::INVALID_LIST_POSITION {
             0
@@ -328,11 +336,13 @@ impl Browser {
 
     fn accept_find(&self) {
         self.find.borrow_mut().accept();
+        self.mode.borrow_mut().finish_find();
         self.status.set_label("NORMAL  Find accepted · n/N repeat");
     }
 
     fn cancel_find(&self) {
         let position = self.find.borrow_mut().cancel();
+        self.mode.borrow_mut().cancel();
         self.select_position(position);
         self.status.set_label("NORMAL  Find cancelled");
     }
@@ -349,55 +359,94 @@ impl Browser {
         }
     }
 
-    fn prompt_create(self: &Rc<Self>, window: &gtk::ApplicationWindow, directory: bool) {
-        let title = if directory {
-            "Create Directory"
+    fn start_create(&self, directory: bool) {
+        let kind = if directory {
+            InputModeKind::CreateDirectory
         } else {
-            "Create File"
+            InputModeKind::CreateFile
         };
-        let weak = Rc::downgrade(self);
-        prompt_name(window, title, "", move |name| {
-            let Some(browser) = weak.upgrade() else {
-                return;
-            };
-            let parent = browser.navigation.borrow().current().clone();
-            let id = browser.operation_id();
-            let callback_browser = Rc::downgrade(&browser);
-            let callback = move |result| {
-                if let Some(browser) = callback_browser.upgrade() {
-                    browser.operation_finished(result);
-                }
-            };
-            if directory {
-                create_directory(id, &parent, &name, callback);
-            } else {
-                create_file(id, &parent, &name, callback);
-            }
-        });
+        if self.mode.borrow_mut().begin_text_input(kind, "") {
+            self.input_source.borrow_mut().take();
+            self.status.set_label(&format!(
+                "INPUT  {} · Enter accept · Escape cancel",
+                kind.label()
+            ));
+        }
     }
 
-    fn prompt_rename(self: &Rc<Self>, window: &gtk::ApplicationWindow) {
+    fn start_rename(&self) {
         let Some(entry) = self.current.selected_entry() else {
+            self.status.set_label("NORMAL  Nothing selected");
             return;
         };
-        let initial = entry.display_name.clone();
-        let weak = Rc::downgrade(self);
-        prompt_name(window, "Rename", &initial, move |name| {
-            let Some(browser) = weak.upgrade() else {
-                return;
-            };
-            let callback_browser = Rc::downgrade(&browser);
-            rename(
-                browser.operation_id(),
-                &entry.location,
-                &name,
-                move |result| {
-                    if let Some(browser) = callback_browser.upgrade() {
-                        browser.operation_finished(result);
-                    }
-                },
-            );
-        });
+        if self
+            .mode
+            .borrow_mut()
+            .begin_text_input(InputModeKind::Rename, entry.display_name)
+        {
+            *self.input_source.borrow_mut() = Some(entry.location);
+            self.status
+                .set_label("INPUT  Rename · Enter accept · Escape cancel");
+        }
+    }
+
+    fn update_text_input(&self, character: Option<char>) {
+        let mut mode = self.mode.borrow_mut();
+        let Some(input) = mode.text_input_mut() else {
+            return;
+        };
+        match character {
+            Some(character) => input.push(character),
+            None => input.pop(),
+        }
+        self.status.set_label(&format!(
+            "INPUT  {} · Enter accept · Escape cancel",
+            input.kind().label()
+        ));
+    }
+
+    fn cancel_text_input(&self) {
+        self.mode.borrow_mut().cancel();
+        self.input_source.borrow_mut().take();
+        self.status.set_label("NORMAL  Input cancelled");
+    }
+
+    fn submit_text_input(self: &Rc<Self>) -> bool {
+        let Some((kind, value)) = self.mode.borrow_mut().submit_text_input() else {
+            self.status.set_label("INPUT  Invalid name");
+            return false;
+        };
+        let source = self.input_source.borrow_mut().take();
+        let callback_browser = Rc::downgrade(self);
+        let callback = move |result| {
+            if let Some(browser) = callback_browser.upgrade() {
+                browser.operation_finished(result);
+            }
+        };
+        match kind {
+            InputModeKind::CreateFile => create_file(
+                self.operation_id(),
+                self.navigation.borrow().current(),
+                &value,
+                callback,
+            ),
+            InputModeKind::CreateDirectory => create_directory(
+                self.operation_id(),
+                self.navigation.borrow().current(),
+                &value,
+                callback,
+            ),
+            InputModeKind::Rename => {
+                let Some(source) = source else {
+                    self.status
+                        .set_label("NORMAL  Rename source is unavailable");
+                    return true;
+                };
+                rename(self.operation_id(), &source, &value, callback)
+            }
+        };
+        self.status.set_label("NORMAL  Operation started…");
+        true
     }
 
     #[allow(deprecated)]
@@ -561,6 +610,8 @@ impl Browser {
 
     fn navigate_to(self: &Rc<Self>, location: Location, preferred: Option<Location>) {
         self.find.borrow_mut().reset();
+        *self.mode.borrow_mut() = AppMode::Normal;
+        self.input_source.borrow_mut().take();
         let selected = self.current.selection.selected();
         if selected != gtk::INVALID_LIST_POSITION {
             self.navigation.borrow_mut().remember_cursor(selected);
@@ -714,7 +765,44 @@ fn install_keyboard_controller(
     let key_hints = key_hints.clone();
     controller.connect_key_pressed(move |_, key, _, modifiers| {
         if let Some(browser) = browser.upgrade()
-            && browser.find.borrow().is_active()
+            && browser.mode.borrow().text_input().is_some()
+        {
+            match key {
+                gdk::Key::Escape => {
+                    browser.cancel_text_input();
+                    restore_hint_overlay(&key_hints, hints_enabled.get());
+                }
+                gdk::Key::Return | gdk::Key::KP_Enter => {
+                    if browser.submit_text_input() {
+                        restore_hint_overlay(&key_hints, hints_enabled.get());
+                    } else {
+                        show_text_input(&key_hints, &browser.mode.borrow());
+                    }
+                }
+                gdk::Key::BackSpace => {
+                    browser.update_text_input(None);
+                    show_text_input(&key_hints, &browser.mode.borrow());
+                }
+                _ if !modifiers.intersects(
+                    gdk::ModifierType::CONTROL_MASK
+                        | gdk::ModifierType::ALT_MASK
+                        | gdk::ModifierType::SUPER_MASK,
+                ) =>
+                {
+                    if let Some(character) = key.to_unicode()
+                        && !character.is_control()
+                    {
+                        browser.update_text_input(Some(character));
+                        show_text_input(&key_hints, &browser.mode.borrow());
+                    }
+                }
+                _ => return glib::Propagation::Proceed,
+            }
+            return glib::Propagation::Stop;
+        }
+
+        if let Some(browser) = browser.upgrade()
+            && *browser.mode.borrow() == AppMode::Find
         {
             match key {
                 gdk::Key::Escape => {
@@ -849,6 +937,8 @@ fn install_keyboard_controller(
                     if let Some(window) = weak_window.upgrade() {
                         if browser.dispatch(command, &window) {
                             window.close();
+                        } else if browser.mode.borrow().text_input().is_some() {
+                            show_text_input(&key_hints, &browser.mode.borrow());
                         }
                     }
                 }
@@ -893,6 +983,30 @@ fn show_find_query(grid: &gtk::Grid, query: &str, matched: bool) {
         "No match"
     };
     populate_hint_grid(grid, [("Find".to_owned(), value), (String::new(), state)]);
+    grid.set_visible(true);
+}
+
+fn show_text_input(grid: &gtk::Grid, mode: &AppMode) {
+    let Some(input) = mode.text_input() else {
+        return;
+    };
+    let value = if input.value().is_empty() {
+        "Type a name…"
+    } else {
+        input.value()
+    };
+    let state = input.error().unwrap_or(if input.will_replace_on_type() {
+        "Selected · Type to replace · Esc cancel"
+    } else {
+        "Enter accept · Esc cancel"
+    });
+    populate_hint_grid(
+        grid,
+        [
+            (input.kind().label().to_owned(), value),
+            (String::new(), state),
+        ],
+    );
     grid.set_visible(true);
 }
 
@@ -946,42 +1060,6 @@ fn unique_destination(parent: &gio::File, display_name: &str) -> Location {
         }
     }
     unreachable!("the unique-name counter is unbounded")
-}
-
-#[allow(deprecated)]
-fn prompt_name(
-    window: &gtk::ApplicationWindow,
-    title: &str,
-    initial: &str,
-    on_accept: impl Fn(String) + 'static,
-) {
-    let dialog = gtk::Dialog::builder()
-        .transient_for(window)
-        .modal(true)
-        .title(title)
-        .build();
-    dialog.add_button("Cancel", gtk::ResponseType::Cancel);
-    dialog.add_button("OK", gtk::ResponseType::Accept);
-    dialog.set_default_response(gtk::ResponseType::Accept);
-    let entry = gtk::Entry::builder()
-        .text(initial)
-        .activates_default(true)
-        .margin_start(12)
-        .margin_end(12)
-        .margin_top(12)
-        .margin_bottom(12)
-        .build();
-    dialog.content_area().append(&entry);
-    let response_entry = entry.clone();
-    dialog.connect_response(move |dialog, response| {
-        if response == gtk::ResponseType::Accept {
-            on_accept(response_entry.text().to_string());
-        }
-        dialog.close();
-    });
-    dialog.present();
-    entry.grab_focus();
-    entry.select_region(0, -1);
 }
 
 fn install_hint_css() {

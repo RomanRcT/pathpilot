@@ -176,6 +176,155 @@ impl OperationClipboard {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum InputModeKind {
+    CreateFile,
+    CreateDirectory,
+    Rename,
+}
+
+impl InputModeKind {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::CreateFile => "Create file",
+            Self::CreateDirectory => "Create directory",
+            Self::Rename => "Rename",
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TextInputMode {
+    kind: InputModeKind,
+    value: String,
+    replace_on_type: bool,
+    error: Option<&'static str>,
+}
+
+impl TextInputMode {
+    fn new(kind: InputModeKind, initial: impl Into<String>) -> Self {
+        let value = initial.into();
+        Self {
+            kind,
+            replace_on_type: !value.is_empty(),
+            value,
+            error: None,
+        }
+    }
+
+    pub fn kind(&self) -> InputModeKind {
+        self.kind
+    }
+
+    pub fn value(&self) -> &str {
+        &self.value
+    }
+
+    pub fn error(&self) -> Option<&'static str> {
+        self.error
+    }
+
+    pub fn will_replace_on_type(&self) -> bool {
+        self.replace_on_type
+    }
+
+    pub fn push(&mut self, character: char) {
+        if self.replace_on_type {
+            self.value.clear();
+            self.replace_on_type = false;
+        }
+        self.value.push(character);
+        self.error = None;
+    }
+
+    pub fn pop(&mut self) {
+        if self.replace_on_type {
+            self.value.clear();
+            self.replace_on_type = false;
+        } else {
+            self.value.pop();
+        }
+        self.error = None;
+    }
+
+    fn validate(&mut self) -> bool {
+        self.error = if self.value.is_empty() {
+            Some("Name cannot be empty")
+        } else if self.value == "." || self.value == ".." || self.value.contains(['/', '\0']) {
+            Some("Name cannot contain a path separator or be . or ..")
+        } else {
+            None
+        };
+        self.error.is_none()
+    }
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub enum AppMode {
+    #[default]
+    Normal,
+    Find,
+    TextInput(TextInputMode),
+}
+
+impl AppMode {
+    pub fn begin_find(&mut self) -> bool {
+        if *self != Self::Normal {
+            return false;
+        }
+        *self = Self::Find;
+        true
+    }
+
+    pub fn begin_text_input(&mut self, kind: InputModeKind, initial: impl Into<String>) -> bool {
+        if *self != Self::Normal {
+            return false;
+        }
+        *self = Self::TextInput(TextInputMode::new(kind, initial));
+        true
+    }
+
+    pub fn text_input(&self) -> Option<&TextInputMode> {
+        match self {
+            Self::TextInput(input) => Some(input),
+            _ => None,
+        }
+    }
+
+    pub fn text_input_mut(&mut self) -> Option<&mut TextInputMode> {
+        match self {
+            Self::TextInput(input) => Some(input),
+            _ => None,
+        }
+    }
+
+    pub fn submit_text_input(&mut self) -> Option<(InputModeKind, String)> {
+        let input = self.text_input_mut()?;
+        if !input.validate() {
+            return None;
+        }
+        let submission = (input.kind(), input.value().to_owned());
+        *self = Self::Normal;
+        Some(submission)
+    }
+
+    pub fn finish_find(&mut self) -> bool {
+        if *self != Self::Find {
+            return false;
+        }
+        *self = Self::Normal;
+        true
+    }
+
+    pub fn cancel(&mut self) -> bool {
+        if *self == Self::Normal {
+            return false;
+        }
+        *self = Self::Normal;
+        true
+    }
+}
+
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct FilenameFind {
     active: bool,
@@ -751,5 +900,45 @@ mod tests {
         assert!(!move_clipboard.should_clear_after(&moving, false));
         assert!(move_clipboard.should_clear_after(&moving, true));
         assert_eq!(move_clipboard.status_label(), "CUT: source.txt");
+    }
+
+    #[test]
+    fn mode_state_machine_allows_only_explicit_transitions() {
+        let mut mode = AppMode::default();
+        assert!(mode.begin_find());
+        assert!(!mode.begin_text_input(InputModeKind::CreateFile, ""));
+        assert!(mode.finish_find());
+        assert!(mode.begin_text_input(InputModeKind::CreateDirectory, ""));
+        assert!(!mode.begin_find());
+        assert!(mode.cancel());
+        assert_eq!(mode, AppMode::Normal);
+        assert!(!mode.cancel());
+    }
+
+    #[test]
+    fn text_input_validates_names_and_rename_replaces_the_initial_selection() {
+        let mut mode = AppMode::default();
+        mode.begin_text_input(InputModeKind::CreateFile, "");
+        assert_eq!(mode.submit_text_input(), None);
+        assert_eq!(
+            mode.text_input().and_then(TextInputMode::error),
+            Some("Name cannot be empty")
+        );
+        for character in "../bad".chars() {
+            mode.text_input_mut().expect("text input").push(character);
+        }
+        assert_eq!(mode.submit_text_input(), None);
+        mode.cancel();
+
+        mode.begin_text_input(InputModeKind::Rename, "old-name.txt");
+        mode.text_input_mut().expect("text input").push('n');
+        for character in "ew-name.txt".chars() {
+            mode.text_input_mut().expect("text input").push(character);
+        }
+        assert_eq!(
+            mode.submit_text_input(),
+            Some((InputModeKind::Rename, "new-name.txt".to_owned()))
+        );
+        assert_eq!(mode, AppMode::Normal);
     }
 }
