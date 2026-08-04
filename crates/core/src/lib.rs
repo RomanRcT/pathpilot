@@ -797,11 +797,18 @@ pub struct PendingKeySequence {
     pub hints: Vec<KeyHint>,
 }
 
-/// Minimal state machine for Phase 0 normal-mode navigation.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct KeyBinding {
+    pub sequence: String,
+    pub command: AppCommand,
+    pub label: &'static str,
+}
+
 #[derive(Debug)]
 pub struct KeySequenceParser {
-    pending_g: Option<(Instant, char)>,
+    pending: Option<(Instant, char)>,
     sequence_timeout: Duration,
+    bindings: Vec<KeyBinding>,
 }
 
 impl Default for KeySequenceParser {
@@ -812,85 +819,93 @@ impl Default for KeySequenceParser {
 
 impl KeySequenceParser {
     pub fn new(sequence_timeout: Duration) -> Self {
+        Self::with_bindings(sequence_timeout, default_key_bindings())
+    }
+
+    pub fn with_bindings(sequence_timeout: Duration, bindings: Vec<KeyBinding>) -> Self {
         Self {
-            pending_g: None,
+            pending: None,
             sequence_timeout,
+            bindings,
         }
     }
 
     pub fn feed(&mut self, key: char, now: Instant) -> KeyResult {
-        if let Some(started) = self.pending_g.take()
+        if let Some(started) = self.pending.take()
             && now.duration_since(started.0) <= self.sequence_timeout
         {
-            let command = match (started.1, key) {
-                ('g', 'g') => Some(AppCommand::GoFirst),
-                ('a', 'f') => Some(AppCommand::CreateFile),
-                ('a', 'd') => Some(AppCommand::CreateDirectory),
-                ('d', 'd') => Some(AppCommand::Trash),
-                ('d', 'D') => Some(AppCommand::PermanentDelete),
-                _ => None,
-            };
-            if let Some(command) = command {
-                return KeyResult::Command(command);
+            let sequence = format!("{}{key}", started.1);
+            if let Some(binding) = self.bindings.iter().find(|item| item.sequence == sequence) {
+                return KeyResult::Command(binding.command);
             }
         }
-
-        match key {
-            'j' => KeyResult::Command(AppCommand::NavigateDown),
-            'k' => KeyResult::Command(AppCommand::NavigateUp),
-            'l' => KeyResult::Command(AppCommand::Enter),
-            'h' => KeyResult::Command(AppCommand::GoParent),
-            'q' => KeyResult::Command(AppCommand::Quit),
-            'r' => KeyResult::Command(AppCommand::Rename),
-            'y' => KeyResult::Command(AppCommand::Copy),
-            'x' => KeyResult::Command(AppCommand::Cut),
-            'p' => KeyResult::Command(AppCommand::Paste),
-            'v' => KeyResult::Command(AppCommand::ToggleVisual),
-            'G' => KeyResult::Command(AppCommand::GoLast),
-            'g' | 'a' | 'd' => self.begin_sequence(key, now),
-            _ => KeyResult::Ignored,
+        if let Some(binding) = self
+            .bindings
+            .iter()
+            .find(|item| item.sequence == key.to_string())
+        {
+            return KeyResult::Command(binding.command);
         }
+        self.begin_sequence(key, now)
     }
 
     pub fn reset(&mut self) {
-        self.pending_g = None;
+        self.pending = None;
     }
 
     pub fn is_pending(&self) -> bool {
-        self.pending_g.is_some()
+        self.pending.is_some()
     }
 
     fn begin_sequence(&mut self, prefix: char, now: Instant) -> KeyResult {
-        self.pending_g = Some((now, prefix));
-        let hints = match prefix {
-            'g' => vec![KeyHint {
-                key: 'g',
-                label: "first item",
-            }],
-            'a' => vec![
-                KeyHint {
-                    key: 'f',
-                    label: "create file",
-                },
-                KeyHint {
-                    key: 'd',
-                    label: "create directory",
-                },
-            ],
-            'd' => vec![
-                KeyHint {
-                    key: 'd',
-                    label: "move to trash",
-                },
-                KeyHint {
-                    key: 'D',
-                    label: "delete permanently",
-                },
-            ],
-            _ => Vec::new(),
-        };
+        let hints: Vec<_> = self
+            .bindings
+            .iter()
+            .filter_map(|binding| {
+                let mut chars = binding.sequence.chars();
+                (chars.next() == Some(prefix))
+                    .then(|| chars.next())
+                    .flatten()
+                    .map(|key| KeyHint {
+                        key,
+                        label: binding.label,
+                    })
+            })
+            .collect();
+        if hints.is_empty() {
+            return KeyResult::Ignored;
+        }
+        self.pending = Some((now, prefix));
         KeyResult::Pending(PendingKeySequence { prefix, hints })
     }
+}
+
+fn default_key_bindings() -> Vec<KeyBinding> {
+    [
+        ("j", AppCommand::NavigateDown, "down"),
+        ("k", AppCommand::NavigateUp, "up"),
+        ("l", AppCommand::Enter, "open"),
+        ("h", AppCommand::GoParent, "parent"),
+        ("q", AppCommand::Quit, "quit"),
+        ("r", AppCommand::Rename, "rename"),
+        ("y", AppCommand::Copy, "copy"),
+        ("x", AppCommand::Cut, "cut"),
+        ("p", AppCommand::Paste, "paste"),
+        ("v", AppCommand::ToggleVisual, "visual selection"),
+        ("G", AppCommand::GoLast, "last item"),
+        ("gg", AppCommand::GoFirst, "first item"),
+        ("af", AppCommand::CreateFile, "create file"),
+        ("ad", AppCommand::CreateDirectory, "create directory"),
+        ("dd", AppCommand::Trash, "move to trash"),
+        ("dD", AppCommand::PermanentDelete, "delete permanently"),
+    ]
+    .into_iter()
+    .map(|(sequence, command, label)| KeyBinding {
+        sequence: sequence.to_owned(),
+        command,
+        label,
+    })
+    .collect()
 }
 
 #[cfg(test)]

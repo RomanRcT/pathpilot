@@ -3,6 +3,7 @@ resolver = "3"
 members = [
     "crates/app",
     "crates/core",
+    "crates/config",
     "crates/fs-local",
     "crates/operations",
     "crates/preview",
@@ -22,6 +23,7 @@ glib = "0.21"
 futures-util = "0.3"
 gtk = { package = "gtk4", version = "0.10", features = ["v4_12"] }
 pathpilot-core = { path = "crates/core" }
+pathpilot-config = { path = "crates/config" }
 pathpilot-fs-local = { path = "crates/fs-local" }
 pathpilot-operations = { path = "crates/operations" }
 pathpilot-preview = { path = "crates/preview" }
@@ -29,5 +31,7 @@ pathpilot-ui-gtk = { path = "crates/ui-gtk" }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 tempfile = "3"
+serde = { version = "1", features = ["derive"] }
+toml = "0.9"
 syntect = { version = "5.3", default-features = false, features = ["default-fancy"] }
 pulldown-cmark = { version = "0.13.4", default-features = false }
