@@ -1,8 +1,15 @@
 # PathPilot
 
-PathPilot is an experimental keyboard-first graphical file manager for Linux, built with Rust, GTK 4, and GIO. It combines ranger-style three-column navigation, Vim-inspired controls, conventional mouse interaction, and responsive file previews.
+PathPilot is a keyboard-first graphical file manager for Linux, built with Rust,
+GTK 4, and GIO. It combines ranger-style three-column navigation, Vim-inspired
+controls, conventional mouse interaction, responsive previews, and an embedded
+Neovim editor.
 
-The project is in early development. The initial milestones and Phases 2–4 are implemented. See [`pathpilot_project_plan.md`](pathpilot_project_plan.md) for the complete product plan. PathPilot currently requires GTK 4.12 or newer.
+`v0.1.0` is the first preview release. The core local-file workflow is usable,
+but packaging, remote filesystems, accessibility review, and broader desktop
+validation are still in progress. See
+[`pathpilot_project_plan.md`](pathpilot_project_plan.md) for the long-term plan.
+PathPilot requires GTK 4.12 or newer and GTK4 VTE.
 
 ## Current features
 
@@ -20,7 +27,7 @@ The project is in early development. The initial milestones and Phases 2–4 are
 - Source previews are syntax-highlighted off the GTK thread with `syntect`.
 - Markdown headings, emphasis, lists, tables, links, and code are rendered without executing HTML or loading remote content.
 - A 24-entry LRU preview cache is invalidated by URI, size, and modification time.
-- A status line with the selected index and entry count.
+- Mode-colored status line with compact metadata and separate Git repository status.
 - Structured startup, model creation, and selection tracing.
 - GTK-independent commands and key-sequence parsing.
 - Keyboard-driven create, rename, trash, copy, move, and paste operations.
@@ -33,15 +40,43 @@ The project is in early development. The initial milestones and Phases 2–4 are
 - Visual selections can be copied, moved, trashed, or permanently deleted as one cancellable batch.
 - Searchable command palette opened with `:` or `Ctrl+Shift+P`.
 - Configurable one- and two-key command bindings loaded from TOML with safe fallback.
+- Persistent window geometry, pane layouts, divider positions, last directory, and hint preference.
+- Browse, focused-preview, and preview-only layouts cycled with `z`.
+- Filename search with `f`, Enter, `n`, and `N`.
+- `g` places for Home, Downloads, root, and configurable bookmarks.
+- Text clipboard commands for filenames, directory paths, and full paths.
+- MIME-aware Open With history backed by the native GTK/GNOME application chooser.
+- Embedded Neovim editing for local text files through a GTK4 VTE terminal.
 
-The application opens the directory from which it is started. Use `l` or double click to enter a directory and `h` to return to its parent.
+The first launch opens the directory from which PathPilot is started. Later
+launches restore the last visited directory. Use `l` or double click to enter a
+directory and `h` to return to its parent.
+
+## Essential keyboard commands
+
+| Keys | Action |
+| --- | --- |
+| `h` / `j` / `k` / `l` | Parent / down / up / open |
+| `gg` / `G` | First / last item |
+| `f`, Enter, `n`, `N` | Find and repeat filename matches |
+| `a f` / `a d` / `r` | Create file / create directory / rename |
+| `y y` / `x` / `p` | Copy / cut / paste filesystem items |
+| `y n` / `y d` / `y p` | Copy name / directory path / full path as text |
+| `d d` / `d D` | Trash / permanently delete |
+| `v` | Toggle Visual selection |
+| `g h` / `g d` / `g r` | Home / Downloads / filesystem root |
+| `o e` / `o 1`…`o 9` | System Open With chooser / saved application |
+| `z` | Cycle pane layout |
+| `e` | Edit a local text file in embedded Neovim |
+| `:` / `F1` | Command palette / command reference |
 
 ## Current limitations
 
-- Local filesystem browsing only.
-- No tabs, configurable keymap, filtering, or hidden-file toggle yet.
+- Local filesystem browsing and embedded editing only; non-local GIO backends are not complete.
+- No tabs, filtering, or hidden-file toggle yet.
 - No PDF, archive, office document, audio, or video previews.
 - No remote filesystem backends or plugin API.
+- Embedded editing requires `nvim` and currently accepts local text files only.
 - Fedora and Wayland are the primary development targets; other Linux environments are not yet validated.
 
 ## Roadmap
@@ -49,7 +84,7 @@ The application opens the directory from which it is started. Use `l` or double 
 The next major steps are:
 
 1. Improve batch conflict policies and surface a richer operation summary.
-2. Add drag-and-drop, open-with integration, accessibility, and diagnostics.
+2. Add drag-and-drop, accessibility, diagnostics, and remote GIO workflows.
 3. Complete Fedora packaging and performance regression coverage.
 
 Detailed phases, performance targets, and exit criteria are maintained in [`pathpilot_project_plan.md`](pathpilot_project_plan.md).
@@ -59,7 +94,7 @@ Detailed phases, performance targets, and exit criteria are maintained in [`path
 Install the native dependencies:
 
 ```bash
-sudo dnf install rust cargo gtk4-devel gcc pkgconf-pkg-config
+sudo dnf install rust cargo gtk4-devel vte291-gtk4-devel gcc pkgconf-pkg-config neovim
 ```
 
 Build and run:
@@ -83,6 +118,11 @@ cargo test --workspace
 ```
 
 GTK 4 applications require a graphical session. PathPilot targets Wayland first but can also use another GDK backend supported by the local GTK installation.
+
+User settings are stored under `${XDG_CONFIG_HOME:-~/.config}/pathpilot/`.
+`config.toml` contains UI state, bookmarks, and Open With history;
+`keymap.toml` can override the default command bindings. See the focused guides
+in [`docs/`](docs/) for configuration examples and implemented behavior.
 
 ## License
 
