@@ -94,10 +94,29 @@ impl OperationId {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum OperationKind {
-    CreateFile { parent: Location, name: String },
-    CreateDirectory { parent: Location, name: String },
-    Rename { source: Location, new_name: String },
-    Trash { target: Location },
+    CreateFile {
+        parent: Location,
+        name: String,
+    },
+    CreateDirectory {
+        parent: Location,
+        name: String,
+    },
+    Rename {
+        source: Location,
+        new_name: String,
+    },
+    Trash {
+        target: Location,
+    },
+    Copy {
+        source: Location,
+        destination: Location,
+    },
+    Move {
+        source: Location,
+        destination: Location,
+    },
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -123,6 +142,19 @@ pub struct OperationJob {
     pub kind: OperationKind,
     pub state: OperationState,
     pub progress: OperationProgress,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ClipboardAction {
+    Copy,
+    Move,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct OperationClipboard {
+    pub action: ClipboardAction,
+    pub source: Location,
+    pub display_name: String,
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -276,6 +308,9 @@ pub enum AppCommand {
     CreateDirectory,
     Rename,
     Trash,
+    Copy,
+    Cut,
+    Paste,
 }
 
 /// Result of feeding a key to the normal-mode parser.
@@ -334,6 +369,18 @@ pub const COMMAND_REFERENCE: &[CommandHint] = &[
     CommandHint {
         keys: "r / F2",
         label: "Rename",
+    },
+    CommandHint {
+        keys: "y / Ctrl+C",
+        label: "Copy",
+    },
+    CommandHint {
+        keys: "x / Ctrl+X",
+        label: "Cut (move)",
+    },
+    CommandHint {
+        keys: "p / Ctrl+V",
+        label: "Paste",
     },
     CommandHint {
         keys: "d / Delete",
@@ -399,6 +446,9 @@ impl KeySequenceParser {
             'h' => KeyResult::Command(AppCommand::GoParent),
             'q' => KeyResult::Command(AppCommand::Quit),
             'r' => KeyResult::Command(AppCommand::Rename),
+            'y' => KeyResult::Command(AppCommand::Copy),
+            'x' => KeyResult::Command(AppCommand::Cut),
+            'p' => KeyResult::Command(AppCommand::Paste),
             'G' => KeyResult::Command(AppCommand::GoLast),
             'g' | 'a' | 'd' => self.begin_sequence(key, now),
             _ => KeyResult::Ignored,
@@ -523,6 +573,9 @@ mod tests {
         );
         assert_eq!(parser.feed('l', now), KeyResult::Command(AppCommand::Enter));
         assert_eq!(parser.feed('q', now), KeyResult::Command(AppCommand::Quit));
+        assert_eq!(parser.feed('y', now), KeyResult::Command(AppCommand::Copy));
+        assert_eq!(parser.feed('x', now), KeyResult::Command(AppCommand::Cut));
+        assert_eq!(parser.feed('p', now), KeyResult::Command(AppCommand::Paste));
     }
 
     #[test]
@@ -555,7 +608,7 @@ mod tests {
         let mut parser = KeySequenceParser::default();
 
         assert!(matches!(parser.feed('g', now), KeyResult::Pending(_)));
-        assert_eq!(parser.feed('x', now), KeyResult::Ignored);
+        assert_eq!(parser.feed('x', now), KeyResult::Command(AppCommand::Cut));
         assert!(matches!(parser.feed('g', now), KeyResult::Pending(_)));
     }
 

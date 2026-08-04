@@ -26,10 +26,15 @@ Every operation has an `OperationId`, typed `OperationKind`, state, progress fie
 - `r` or `F2` renames the selected item;
 - `d d` or `Delete` moves the selected item to trash after confirmation.
 - `f` finds a filename without filtering the directory; `n` and `N` repeat the accepted search.
+- `y` or `Ctrl+C` stores the selected item for copying;
+- `x` or `Ctrl+X` stores the selected item for moving;
+- `p` or `Ctrl+V` pastes into the current directory.
 
 `F1` toggles a persistent, column-aligned reference containing the top-level commands. Pressing a sequence prefix replaces it with the valid continuations for that prefix, and completing or cancelling the sequence restores the main reference. The semi-transparent foreground hint does not consume layout space or disappear on a timer.
 
 The `/` binding remains reserved for a future directory-filtering mode.
+
+Copy and move use asynchronous GIO operations, expose byte progress in the status line, reject recursive destinations, and never silently overwrite an existing destination. A copied item remains in the operation clipboard for repeated pastes; a moved item is cleared only after success. `Escape` cancels an active transfer. The initial copy primitive handles files; recursive directory copy remains part of the next operation-engine slice, while GIO move already supports complete directory trees.
 
 ## Verification
 
@@ -37,4 +42,4 @@ Temporary-filesystem integration tests create and rename a file, verify that con
 
 ## Next slice
 
-Copy and move jobs will add progress reporting and explicit conflict policies.
+Recursive directory copy, multi-selection batches, and interactive conflict policies will extend the operation engine next.

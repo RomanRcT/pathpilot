@@ -16,7 +16,7 @@ license = "GPL-3.0-or-later"
 rust-version = "1.85"
 
 [workspace.dependencies]
-gio = "0.21"
+gio = { version = "0.21", features = ["v2_72"] }
 gdk-pixbuf = "0.21"
 glib = "0.21"
 gtk = { package = "gtk4", version = "0.10", features = ["v4_12"] }

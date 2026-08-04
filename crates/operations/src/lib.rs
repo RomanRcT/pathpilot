@@ -11,6 +11,8 @@ pub enum OperationErrorKind {
     NotFound,
     InvalidName,
     Cancelled,
+    InvalidDestination,
+    Unsupported,
     Other,
 }
 
@@ -146,6 +148,88 @@ pub fn trash(
     OperationHandle { id, cancellable }
 }
 
+pub fn copy_item(
+    id: OperationId,
+    source: &Location,
+    destination: &Location,
+    on_progress: impl Fn(u64, Option<u64>) + 'static,
+    on_finished: impl Fn(OperationResult) + 'static,
+) -> OperationHandle {
+    transfer_item(id, source, destination, false, on_progress, on_finished)
+}
+
+pub fn move_item(
+    id: OperationId,
+    source: &Location,
+    destination: &Location,
+    on_progress: impl Fn(u64, Option<u64>) + 'static,
+    on_finished: impl Fn(OperationResult) + 'static,
+) -> OperationHandle {
+    transfer_item(id, source, destination, true, on_progress, on_finished)
+}
+
+fn transfer_item(
+    id: OperationId,
+    source: &Location,
+    destination: &Location,
+    moving: bool,
+    on_progress: impl Fn(u64, Option<u64>) + 'static,
+    on_finished: impl Fn(OperationResult) + 'static,
+) -> OperationHandle {
+    let kind = if moving {
+        OperationKind::Move {
+            source: source.clone(),
+            destination: destination.clone(),
+        }
+    } else {
+        OperationKind::Copy {
+            source: source.clone(),
+            destination: destination.clone(),
+        }
+    };
+    let source_file = gio::File::for_uri(source.uri());
+    let destination_file = gio::File::for_uri(destination.uri());
+    let cancellable = gio::Cancellable::new();
+    if source_file == destination_file || destination_file.has_prefix(&source_file) {
+        glib::idle_add_local_once(move || {
+            on_finished(OperationResult {
+                id,
+                kind,
+                resulting_location: None,
+                result: Err(OperationError {
+                    kind: OperationErrorKind::InvalidDestination,
+                    message: "An item cannot be copied or moved into itself".to_owned(),
+                }),
+            });
+        });
+        return OperationHandle { id, cancellable };
+    }
+    let progress = Box::new(move |current: i64, total: i64| {
+        on_progress(current.max(0) as u64, (total >= 0).then_some(total as u64));
+    });
+    let resulting_location = destination.clone();
+    if moving {
+        source_file.move_async(
+            &destination_file,
+            gio::FileCopyFlags::NONE,
+            glib::Priority::DEFAULT,
+            Some(&cancellable),
+            Some(progress),
+            move |result| publish(id, kind, Some(resulting_location), result, on_finished),
+        );
+    } else {
+        source_file.copy_async(
+            &destination_file,
+            gio::FileCopyFlags::NONE,
+            glib::Priority::DEFAULT,
+            Some(&cancellable),
+            Some(progress),
+            move |result| publish(id, kind, Some(resulting_location), result, on_finished),
+        );
+    }
+    OperationHandle { id, cancellable }
+}
+
 fn child_for_name(parent: &Location, name: &str) -> Option<gio::File> {
     valid_name(name).then(|| gio::File::for_uri(parent.uri()).child(name))
 }
@@ -202,6 +286,11 @@ fn classify_error(error: glib::Error) -> OperationError {
         OperationErrorKind::NotFound
     } else if error.matches(gio::IOErrorEnum::Cancelled) {
         OperationErrorKind::Cancelled
+    } else if error.matches(gio::IOErrorEnum::IsDirectory)
+        || error.matches(gio::IOErrorEnum::WouldRecurse)
+        || error.matches(gio::IOErrorEnum::NotSupported)
+    {
+        OperationErrorKind::Unsupported
     } else {
         OperationErrorKind::Other
     };
@@ -213,9 +302,22 @@ fn classify_error(error: glib::Error) -> OperationError {
 
 #[cfg(test)]
 mod tests {
-    use std::{cell::RefCell, fs, rc::Rc};
+    use std::{
+        cell::RefCell,
+        fs,
+        rc::Rc,
+        sync::{Mutex, MutexGuard},
+    };
 
     use super::*;
+
+    static GIO_TEST_LOCK: Mutex<()> = Mutex::new(());
+
+    fn gio_test_lock() -> MutexGuard<'static, ()> {
+        GIO_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+    }
 
     fn run_operation(
         start: impl FnOnce(Box<dyn Fn(OperationResult)>) -> OperationHandle,
@@ -236,6 +338,7 @@ mod tests {
 
     #[test]
     fn creates_and_renames_without_overwriting() {
+        let _guard = gio_test_lock();
         let temporary = tempfile::tempdir().expect("create temporary directory");
         let parent = Location::new(gio::File::for_path(temporary.path()).uri());
         let created = run_operation(|callback| {
@@ -262,6 +365,7 @@ mod tests {
 
     #[test]
     fn rejects_path_traversal_names() {
+        let _guard = gio_test_lock();
         let parent = Location::new("file:///tmp");
         let result = Rc::new(RefCell::new(None));
         let _handle = create_directory(OperationId::new(4), &parent, "../escape", {
@@ -277,6 +381,63 @@ mod tests {
                 .expect_err("invalid name")
                 .kind,
             OperationErrorKind::InvalidName
+        );
+    }
+
+    #[test]
+    fn copies_files_and_moves_directories_without_overwriting() {
+        let _guard = gio_test_lock();
+        let temporary = tempfile::tempdir().expect("create temporary directory");
+        let source_path = temporary.path().join("source.txt");
+        let copied_path = temporary.path().join("copied.txt");
+        fs::write(&source_path, b"payload").expect("write source");
+        let source = Location::new(gio::File::for_path(&source_path).uri());
+        let copied = Location::new(gio::File::for_path(&copied_path).uri());
+        let result = run_operation(|callback| {
+            copy_item(OperationId::new(5), &source, &copied, |_, _| {}, callback)
+        });
+        assert!(result.result.is_ok());
+        assert_eq!(fs::read(&copied_path).expect("read copy"), b"payload");
+
+        let conflict = run_operation(|callback| {
+            copy_item(OperationId::new(6), &source, &copied, |_, _| {}, callback)
+        });
+        assert_eq!(
+            conflict.result.expect_err("must not overwrite").kind,
+            OperationErrorKind::AlreadyExists
+        );
+
+        let directory_path = temporary.path().join("directory");
+        let moved_path = temporary.path().join("moved-directory");
+        fs::create_dir(&directory_path).expect("create directory");
+        fs::write(directory_path.join("child.txt"), b"child").expect("write child");
+        let directory = Location::new(gio::File::for_path(&directory_path).uri());
+        let moved = Location::new(gio::File::for_path(&moved_path).uri());
+        let result = run_operation(|callback| {
+            move_item(OperationId::new(7), &directory, &moved, |_, _| {}, callback)
+        });
+        assert!(result.result.is_ok());
+        assert!(!directory_path.exists());
+        assert!(moved_path.join("child.txt").exists());
+    }
+
+    #[test]
+    fn rejects_recursive_transfer_destination() {
+        let _guard = gio_test_lock();
+        let source = Location::new("file:///tmp/source-directory");
+        let destination = Location::new("file:///tmp/source-directory/child/copy");
+        let result = run_operation(|callback| {
+            move_item(
+                OperationId::new(8),
+                &source,
+                &destination,
+                |_, _| {},
+                callback,
+            )
+        });
+        assert_eq!(
+            result.result.expect_err("recursive target").kind,
+            OperationErrorKind::InvalidDestination
         );
     }
 }

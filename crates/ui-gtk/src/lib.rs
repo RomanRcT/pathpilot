@@ -12,10 +12,13 @@ use std::{
 use directory_pane::DirectoryPane;
 use gtk::{gdk, gio, glib, prelude::*};
 use pathpilot_core::{
-    AppCommand, COMMAND_REFERENCE, FileEntry, FileKind, FilenameFind, KeyResult, KeySequenceParser,
-    Location, NavigationState, OperationId,
+    AppCommand, COMMAND_REFERENCE, ClipboardAction, FileEntry, FileKind, FilenameFind, KeyResult,
+    KeySequenceParser, Location, NavigationState, OperationClipboard, OperationId, OperationKind,
 };
-use pathpilot_operations::{OperationResult, create_directory, create_file, rename, trash};
+use pathpilot_operations::{
+    OperationHandle, OperationResult, copy_item, create_directory, create_file, move_item, rename,
+    trash,
+};
 use preview_pane::PreviewPane;
 use tracing::{debug, info, info_span, warn};
 
@@ -28,6 +31,8 @@ struct Browser {
     status: gtk::Label,
     next_operation_id: Cell<u64>,
     find: RefCell<FilenameFind>,
+    operation_clipboard: RefCell<Option<OperationClipboard>>,
+    active_operation: RefCell<Option<OperationHandle>>,
 }
 
 impl Browser {
@@ -55,6 +60,8 @@ impl Browser {
                 .build(),
             next_operation_id: Cell::new(1),
             find: RefCell::new(FilenameFind::default()),
+            operation_clipboard: RefCell::new(None),
+            active_operation: RefCell::new(None),
         })
     }
 
@@ -122,6 +129,9 @@ impl Browser {
             AppCommand::CreateDirectory => self.prompt_create(window, true),
             AppCommand::Rename => self.prompt_rename(window),
             AppCommand::Trash => self.confirm_trash(window),
+            AppCommand::Copy => self.store_operation_clipboard(ClipboardAction::Copy),
+            AppCommand::Cut => self.store_operation_clipboard(ClipboardAction::Move),
+            AppCommand::Paste => self.paste_operation_clipboard(),
             AppCommand::Quit => unreachable!("quit handled before navigation dispatch"),
         }
         false
@@ -131,6 +141,83 @@ impl Browser {
         let value = self.next_operation_id.get();
         self.next_operation_id.set(value.wrapping_add(1));
         OperationId::new(value)
+    }
+
+    fn store_operation_clipboard(&self, action: ClipboardAction) {
+        let Some(entry) = self.current.selected_entry() else {
+            self.status.set_label("NORMAL  Nothing selected");
+            return;
+        };
+        let verb = match action {
+            ClipboardAction::Copy => "Copied",
+            ClipboardAction::Move => "Cut",
+        };
+        self.status
+            .set_label(&format!("NORMAL  {verb}: {}", entry.display_name));
+        *self.operation_clipboard.borrow_mut() = Some(OperationClipboard {
+            action,
+            source: entry.location,
+            display_name: entry.display_name,
+        });
+    }
+
+    fn paste_operation_clipboard(self: &Rc<Self>) {
+        if self.active_operation.borrow().is_some() {
+            self.status
+                .set_label("NORMAL  Another file operation is already running");
+            return;
+        }
+        let Some(clipboard) = self.operation_clipboard.borrow().clone() else {
+            self.status
+                .set_label("NORMAL  Operation clipboard is empty");
+            return;
+        };
+        let parent = gio::File::for_uri(self.navigation.borrow().current().uri());
+        let destination = Location::new(parent.child(&clipboard.display_name).uri());
+        let weak_progress = Rc::downgrade(self);
+        let progress = move |current: u64, total: Option<u64>| {
+            if let Some(browser) = weak_progress.upgrade() {
+                let message = total.filter(|total| *total > 0).map_or_else(
+                    || format!("NORMAL  Transferred {current} bytes"),
+                    |total| format!("NORMAL  Transferring {current} / {total} bytes"),
+                );
+                browser.status.set_label(&message);
+            }
+        };
+        let weak_finished = Rc::downgrade(self);
+        let finished = move |result| {
+            if let Some(browser) = weak_finished.upgrade() {
+                browser.operation_finished(result);
+            }
+        };
+        self.status
+            .set_label(&format!("NORMAL  Pasting {}…", clipboard.display_name));
+        let handle = match clipboard.action {
+            ClipboardAction::Copy => copy_item(
+                self.operation_id(),
+                &clipboard.source,
+                &destination,
+                progress,
+                finished,
+            ),
+            ClipboardAction::Move => move_item(
+                self.operation_id(),
+                &clipboard.source,
+                &destination,
+                progress,
+                finished,
+            ),
+        };
+        *self.active_operation.borrow_mut() = Some(handle);
+    }
+
+    fn cancel_active_operation(&self) -> bool {
+        let Some(handle) = self.active_operation.borrow_mut().take() else {
+            return false;
+        };
+        handle.cancel();
+        self.status.set_label("NORMAL  Cancelling operation…");
+        true
     }
 
     fn start_find(&self) {
@@ -269,8 +356,13 @@ impl Browser {
     }
 
     fn operation_finished(self: &Rc<Self>, result: OperationResult) {
+        self.active_operation.borrow_mut().take();
+        let completed_move = matches!(result.kind, OperationKind::Move { .. });
         match result.result {
             Ok(()) => {
+                if completed_move {
+                    self.operation_clipboard.borrow_mut().take();
+                }
                 self.status.set_label("NORMAL  Operation completed");
                 self.reload_columns(result.resulting_location, None);
             }
@@ -384,6 +476,7 @@ impl Browser {
     }
 
     fn cancel(&self) {
+        self.cancel_active_operation();
         self.parent.cancel();
         self.current.cancel();
         self.preview.cancel();
@@ -516,6 +609,12 @@ fn install_keyboard_controller(
         }
 
         if key == gdk::Key::Escape {
+            if browser
+                .upgrade()
+                .is_some_and(|browser| browser.cancel_active_operation())
+            {
+                return glib::Propagation::Stop;
+            }
             parser.borrow_mut().reset();
             if hints_enabled.get() {
                 show_command_reference(&key_hints);
@@ -524,11 +623,22 @@ fn install_keyboard_controller(
             }
             return glib::Propagation::Stop;
         }
+        let conventional_command = if modifiers.contains(gdk::ModifierType::CONTROL_MASK) {
+            match key {
+                gdk::Key::c => Some(AppCommand::Copy),
+                gdk::Key::x => Some(AppCommand::Cut),
+                gdk::Key::v => Some(AppCommand::Paste),
+                _ => None,
+            }
+        } else {
+            None
+        };
         if modifiers.intersects(
             gdk::ModifierType::CONTROL_MASK
                 | gdk::ModifierType::ALT_MASK
                 | gdk::ModifierType::SUPER_MASK,
-        ) {
+        ) && conventional_command.is_none()
+        {
             return glib::Propagation::Proceed;
         }
 
@@ -572,15 +682,18 @@ fn install_keyboard_controller(
             }
         }
 
-        let key_result = match key {
-            gdk::Key::F2 => KeyResult::Command(AppCommand::Rename),
-            gdk::Key::Delete => KeyResult::Command(AppCommand::Trash),
-            _ => {
-                let Some(character) = key.to_unicode() else {
-                    return glib::Propagation::Proceed;
-                };
-                parser.borrow_mut().feed(character, Instant::now())
-            }
+        let key_result = match conventional_command {
+            Some(command) => KeyResult::Command(command),
+            None => match key {
+                gdk::Key::F2 => KeyResult::Command(AppCommand::Rename),
+                gdk::Key::Delete => KeyResult::Command(AppCommand::Trash),
+                _ => {
+                    let Some(character) = key.to_unicode() else {
+                        return glib::Propagation::Proceed;
+                    };
+                    parser.borrow_mut().feed(character, Instant::now())
+                }
+            },
         };
         match key_result {
             KeyResult::Command(command) => {
