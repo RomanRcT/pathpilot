@@ -30,13 +30,13 @@ The project is in early development. The initial milestones, Phase 2 preview pip
 - Explicit Normal, Find, and integrated Text Input modes.
 - In-window create and rename editor with cursor movement, selection, clipboard support, and validation.
 - Visual mode with anchored range selection and a separate preview cursor.
+- Visual selections can be copied, moved, trashed, or permanently deleted as one cancellable batch.
 
 The application opens the directory from which it is started. Use `l` or double click to enter a directory and `h` to return to its parent.
 
 ## Current limitations
 
 - Local filesystem browsing only.
-- Single-item operations only; multi-selection will follow the Phase 4 visual mode.
 - No tabs, configurable keymap, filtering, or hidden-file toggle yet.
 - No PDF, archive, office document, audio, or video previews.
 - No remote filesystem backends or plugin API.
@@ -47,7 +47,7 @@ The application opens the directory from which it is started. Use `l` or double 
 The next major steps are:
 
 1. Complete modal input handling, visual selection, command palette, and TOML keymap configuration.
-2. Extend visual selection into safe multi-item operation batches.
+2. Improve batch conflict policies and surface a richer operation summary.
 3. Add drag-and-drop, open-with integration, accessibility, diagnostics, and Fedora packaging.
 
 Detailed phases, performance targets, and exit criteria are maintained in [`pathpilot_project_plan.md`](pathpilot_project_plan.md).
