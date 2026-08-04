@@ -9,7 +9,7 @@ use gio::prelude::*;
 use pathpilot_core::{FileEntry, FileKind, Generation, Location};
 use tracing::{debug, warn};
 
-const ATTRIBUTES: &str = "standard::name,standard::display-name,standard::type,standard::is-hidden,standard::is-symlink,standard::size,standard::content-type,time::modified";
+const ATTRIBUTES: &str = "standard::name,standard::display-name,standard::type,standard::is-hidden,standard::is-symlink,standard::size,standard::content-type,time::modified,unix::mode";
 const BATCH_SIZE: i32 = 256;
 
 #[derive(Debug)]
@@ -138,6 +138,10 @@ fn file_entry(enumerator: &gio::FileEnumerator, info: &gio::FileInfo) -> FileEnt
         kind,
         size: (info.size() >= 0).then_some(info.size() as u64),
         modified,
+        unix_mode: info
+            .attribute_uint32("unix::mode")
+            .ne(&0)
+            .then(|| info.attribute_uint32("unix::mode")),
         content_type: info.content_type().map(|value| value.to_string()),
         is_hidden: info.is_hidden(),
         is_symlink,
