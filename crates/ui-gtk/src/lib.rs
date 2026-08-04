@@ -38,6 +38,23 @@ struct PlaceBinding {
     target: PlaceTarget,
 }
 
+#[derive(Clone, Copy)]
+enum ClipboardText {
+    Name,
+    DirectoryPath,
+    FullPath,
+}
+
+impl ClipboardText {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Name => "filename",
+            Self::DirectoryPath => "directory path",
+            Self::FullPath => "full path",
+        }
+    }
+}
+
 struct Browser {
     navigation: RefCell<NavigationState>,
     parent: DirectoryPane,
@@ -295,6 +312,9 @@ impl Browser {
                     | AppCommand::GoFirst
                     | AppCommand::GoLast
                     | AppCommand::Copy
+                    | AppCommand::CopyName
+                    | AppCommand::CopyDirectoryPath
+                    | AppCommand::CopyFullPath
                     | AppCommand::Cut
                     | AppCommand::Trash
                     | AppCommand::PermanentDelete
@@ -328,6 +348,11 @@ impl Browser {
             AppCommand::Trash => self.confirm_trash(window),
             AppCommand::PermanentDelete => self.confirm_permanent_delete(window),
             AppCommand::Copy => self.store_operation_clipboard(ClipboardAction::Copy),
+            AppCommand::CopyName => self.copy_selection_text(window, ClipboardText::Name),
+            AppCommand::CopyDirectoryPath => {
+                self.copy_selection_text(window, ClipboardText::DirectoryPath)
+            }
+            AppCommand::CopyFullPath => self.copy_selection_text(window, ClipboardText::FullPath),
             AppCommand::Cut => self.store_operation_clipboard(ClipboardAction::Move),
             AppCommand::Paste => self.paste_operation_clipboard(window),
             AppCommand::ToggleVisual => self.toggle_visual(),
@@ -487,6 +512,34 @@ impl Browser {
                 })
                 .collect(),
         });
+        self.leave_visual();
+    }
+
+    fn copy_selection_text(self: &Rc<Self>, window: &gtk::ApplicationWindow, kind: ClipboardText) {
+        let entries = self.operation_entries();
+        if entries.is_empty() {
+            self.status.set_label("NORMAL  Nothing selected");
+            return;
+        }
+        let values = entries.iter().map(|entry| match kind {
+            ClipboardText::Name => entry.display_name.clone(),
+            ClipboardText::DirectoryPath => {
+                let file = gio::File::for_uri(entry.location.uri());
+                file.parent().map_or_else(
+                    || present_location(&entry.location, None).full,
+                    |parent| present_location(&Location::new(parent.uri()), None).full,
+                )
+            }
+            ClipboardText::FullPath => present_location(&entry.location, None).full,
+        });
+        gtk::prelude::WidgetExt::display(window)
+            .clipboard()
+            .set_text(&values.collect::<Vec<_>>().join("\n"));
+        self.status.set_label(&format!(
+            "NORMAL  Copied {} for {} item(s)",
+            kind.label(),
+            entries.len()
+        ));
         self.leave_visual();
     }
 
