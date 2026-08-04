@@ -25,6 +25,19 @@ use pathpilot_operations::{
 use preview_pane::PreviewPane;
 use tracing::{debug, info, info_span, warn};
 
+#[derive(Clone)]
+enum PlaceTarget {
+    FirstItem,
+    Location(Location),
+}
+
+#[derive(Clone)]
+struct PlaceBinding {
+    key: char,
+    label: String,
+    target: PlaceTarget,
+}
+
 struct Browser {
     navigation: RefCell<NavigationState>,
     parent: DirectoryPane,
@@ -1165,9 +1178,12 @@ pub fn build_window(app: &gtk::Application) -> gtk::ApplicationWindow {
     let _guard = startup_span.enter();
     let settings_path = pathpilot_config::settings_path();
     let (settings, warning) = pathpilot_config::load_settings(settings_path.as_deref());
-    if let Some(error) = warning {
+    if let Some(error) = warning.as_deref() {
         warn!(%error, "invalid settings; using defaults");
     }
+    // Do not replace a malformed user-edited file with defaults on shutdown.
+    // Persistence resumes automatically after the user fixes the file and restarts.
+    let settings_path = warning.is_none().then_some(settings_path).flatten();
     let fallback = || Location::new(gio::File::for_path(".").uri());
     let initial = settings
         .ui
@@ -1268,6 +1284,43 @@ fn connect_activation(pane: &DirectoryPane, browser: Weak<Browser>) {
     });
 }
 
+fn default_places(bookmarks: &[pathpilot_config::Bookmark]) -> Vec<PlaceBinding> {
+    let mut places = vec![PlaceBinding {
+        key: 'g',
+        label: "First item".to_owned(),
+        target: PlaceTarget::FirstItem,
+    }];
+    if let Some(home) = std::env::var_os("HOME") {
+        places.push(PlaceBinding {
+            key: 'h',
+            label: "Home".to_owned(),
+            target: PlaceTarget::Location(Location::new(gio::File::for_path(home).uri())),
+        });
+    }
+    if let Some(downloads) = glib::user_special_dir(glib::UserDirectory::Downloads)
+        && downloads.is_dir()
+    {
+        places.push(PlaceBinding {
+            key: 'd',
+            label: "Downloads".to_owned(),
+            target: PlaceTarget::Location(Location::new(gio::File::for_path(downloads).uri())),
+        });
+    }
+    places.push(PlaceBinding {
+        key: 'r',
+        label: "Filesystem root".to_owned(),
+        target: PlaceTarget::Location(Location::new(gio::File::for_path("/").uri())),
+    });
+    places.extend(bookmarks.iter().filter_map(|bookmark| {
+        Some(PlaceBinding {
+            key: bookmark.key.chars().next()?,
+            label: bookmark.label.clone(),
+            target: PlaceTarget::Location(Location::new(bookmark.uri.clone())),
+        })
+    }));
+    places
+}
+
 fn install_keyboard_controller(
     window: &gtk::ApplicationWindow,
     browser: Weak<Browser>,
@@ -1284,12 +1337,23 @@ fn install_keyboard_controller(
             .borrow_mut()
             .set_key_labels(keymap.key_labels());
     }
+    let places = Rc::new(browser.upgrade().map_or_else(
+        || default_places(&[]),
+        |browser| default_places(&browser.settings.borrow().bookmarks),
+    ));
     let mut reference = keymap.command_reference();
+    reference.retain(|(keys, _)| !keys.starts_with('g'));
     reference.extend([
         ("f".to_owned(), "Find by name"),
         (":".to_owned(), "Command palette"),
         ("F1".to_owned(), "Hide hints"),
     ]);
+    reference.extend(places.iter().map(|place| {
+        (
+            format!("g {}", place.key),
+            Box::leak(place.label.clone().into_boxed_str()) as &'static str,
+        )
+    }));
     let command_reference = Rc::new(reference);
     let (settings, settings_path) = browser.upgrade().map_or_else(
         || {
@@ -1316,6 +1380,9 @@ fn install_keyboard_controller(
     let command_reference = command_reference.clone();
     let settings = settings.clone();
     let settings_path = settings_path.clone();
+    let places = places.clone();
+    let place_pending = Rc::new(Cell::new(false));
+    let place_pending_for_keys = place_pending.clone();
     controller.connect_key_pressed(move |_, key, _, modifiers| {
         if let Some(browser) = browser.upgrade()
             && *browser.mode.borrow() == AppMode::Command
@@ -1377,6 +1444,7 @@ fn install_keyboard_controller(
         }
 
         if key == gdk::Key::Escape {
+            place_pending_for_keys.set(false);
             if browser
                 .upgrade()
                 .is_some_and(|browser| browser.leave_visual())
@@ -1454,6 +1522,34 @@ fn install_keyboard_controller(
         if !parser.borrow().is_pending()
             && let Some(character) = key.to_unicode()
         {
+            if place_pending_for_keys.replace(false) {
+                if let Some(place) = places.iter().find(|place| place.key == character)
+                    && let Some(browser) = browser.upgrade()
+                {
+                    match &place.target {
+                        PlaceTarget::FirstItem => browser.select_position(0),
+                        PlaceTarget::Location(location) => {
+                            browser.navigate_to(location.clone(), None)
+                        }
+                    }
+                    restore_hint_panel(&key_hints, hints_enabled.get(), &command_reference);
+                } else {
+                    restore_hint_panel(&key_hints, hints_enabled.get(), &command_reference);
+                }
+                return glib::Propagation::Stop;
+            }
+            if character == 'g' {
+                parser.borrow_mut().reset();
+                place_pending_for_keys.set(true);
+                populate_hint_grid(
+                    &key_hints,
+                    places
+                        .iter()
+                        .map(|place| (place.key.to_string(), place.label.as_str())),
+                );
+                key_hints.set_visible(true);
+                return glib::Propagation::Stop;
+            }
             match character {
                 'f' => {
                     if let Some(browser) = browser.upgrade() {
