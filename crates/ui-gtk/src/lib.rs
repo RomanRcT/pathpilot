@@ -34,12 +34,40 @@ struct Browser {
     find: RefCell<FilenameFind>,
     mode: RefCell<AppMode>,
     input_source: RefCell<Option<Location>>,
+    input_bar: gtk::Box,
+    input_title: gtk::Label,
+    input_entry: gtk::Entry,
+    input_help: gtk::Label,
     operation_clipboard: RefCell<Option<OperationClipboard>>,
     active_operation: RefCell<Option<OperationHandle>>,
 }
 
 impl Browser {
     fn new(initial: Location) -> Rc<Self> {
+        let input_title = gtk::Label::builder().xalign(1.0).width_chars(16).build();
+        input_title.add_css_class("key-hint-key");
+        let input_entry = gtk::Entry::builder()
+            .width_chars(40)
+            .hexpand(true)
+            .placeholder_text("Type a name…")
+            .activates_default(false)
+            .build();
+        let input_help = gtk::Label::builder()
+            .label("Enter accept · Esc cancel")
+            .xalign(0.0)
+            .build();
+        let input_bar = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .spacing(10)
+            .halign(gtk::Align::Center)
+            .valign(gtk::Align::End)
+            .margin_bottom(42)
+            .visible(false)
+            .build();
+        input_bar.add_css_class("key-hint-overlay");
+        input_bar.append(&input_title);
+        input_bar.append(&input_entry);
+        input_bar.append(&input_help);
         Rc::new(Self {
             navigation: RefCell::new(NavigationState::new(initial)),
             parent: DirectoryPane::new("Parent"),
@@ -65,6 +93,10 @@ impl Browser {
             find: RefCell::new(FilenameFind::default()),
             mode: RefCell::new(AppMode::default()),
             input_source: RefCell::new(None),
+            input_bar,
+            input_title,
+            input_entry,
+            input_help,
             operation_clipboard: RefCell::new(None),
             active_operation: RefCell::new(None),
         })
@@ -82,6 +114,34 @@ impl Browser {
 
         connect_activation(&self.current, Rc::downgrade(self));
         connect_activation(&self.parent, Rc::downgrade(self));
+
+        let weak = Rc::downgrade(self);
+        self.input_entry.connect_changed(move |entry| {
+            let Some(browser) = weak.upgrade() else {
+                return;
+            };
+            let updated = {
+                let mut mode = browser.mode.borrow_mut();
+                mode.text_input_mut().is_some_and(|input| {
+                    input.set_value(entry.text());
+                    true
+                })
+            };
+            if updated {
+                browser.refresh_input_bar();
+            }
+        });
+        let weak = Rc::downgrade(self);
+        self.input_entry.connect_activate(move |_| {
+            let Some(browser) = weak.upgrade() else {
+                return;
+            };
+            if browser.submit_text_input() {
+                browser.hide_input_bar();
+            } else {
+                browser.refresh_input_bar();
+            }
+        });
     }
 
     fn initial_load(self: &Rc<Self>) {
@@ -367,6 +427,8 @@ impl Browser {
         };
         if self.mode.borrow_mut().begin_text_input(kind, "") {
             self.input_source.borrow_mut().take();
+            self.input_entry.set_text("");
+            self.show_input_bar();
             self.status.set_label(&format!(
                 "INPUT  {} · Enter accept · Escape cancel",
                 kind.label()
@@ -385,29 +447,44 @@ impl Browser {
             .begin_text_input(InputModeKind::Rename, entry.display_name)
         {
             *self.input_source.borrow_mut() = Some(entry.location);
+            let initial = self
+                .mode
+                .borrow()
+                .text_input()
+                .map_or_else(String::new, |input| input.value().to_owned());
+            self.input_entry.set_text(&initial);
+            self.input_entry.select_region(0, -1);
+            self.show_input_bar();
             self.status
                 .set_label("INPUT  Rename · Enter accept · Escape cancel");
         }
     }
 
-    fn update_text_input(&self, character: Option<char>) {
-        let mut mode = self.mode.borrow_mut();
-        let Some(input) = mode.text_input_mut() else {
+    fn show_input_bar(&self) {
+        self.refresh_input_bar();
+        self.input_bar.set_visible(true);
+        self.input_entry.grab_focus();
+    }
+
+    fn refresh_input_bar(&self) {
+        let mode = self.mode.borrow();
+        let Some(input) = mode.text_input() else {
             return;
         };
-        match character {
-            Some(character) => input.push(character),
-            None => input.pop(),
-        }
-        self.status.set_label(&format!(
-            "INPUT  {} · Enter accept · Escape cancel",
-            input.kind().label()
-        ));
+        self.input_title.set_label(input.kind().label());
+        self.input_help
+            .set_label(input.error().unwrap_or("Enter accept · Esc cancel"));
+    }
+
+    fn hide_input_bar(&self) {
+        self.input_bar.set_visible(false);
+        self.current.list.grab_focus();
     }
 
     fn cancel_text_input(&self) {
         self.mode.borrow_mut().cancel();
         self.input_source.borrow_mut().take();
+        self.hide_input_bar();
         self.status.set_label("NORMAL  Input cancelled");
     }
 
@@ -612,6 +689,7 @@ impl Browser {
         self.find.borrow_mut().reset();
         *self.mode.borrow_mut() = AppMode::Normal;
         self.input_source.borrow_mut().take();
+        self.hide_input_bar();
         let selected = self.current.selection.selected();
         if selected != gtk::INVALID_LIST_POSITION {
             self.navigation.borrow_mut().remember_cursor(selected);
@@ -704,6 +782,7 @@ pub fn build_window(app: &gtk::Application) -> gtk::ApplicationWindow {
         .build();
     key_hints.add_css_class("key-hint-overlay");
     overlay.add_overlay(&key_hints);
+    overlay.add_overlay(&browser.input_bar);
     install_hint_css();
     window.set_child(Some(&overlay));
 
@@ -767,38 +846,12 @@ fn install_keyboard_controller(
         if let Some(browser) = browser.upgrade()
             && browser.mode.borrow().text_input().is_some()
         {
-            match key {
-                gdk::Key::Escape => {
-                    browser.cancel_text_input();
-                    restore_hint_overlay(&key_hints, hints_enabled.get());
-                }
-                gdk::Key::Return | gdk::Key::KP_Enter => {
-                    if browser.submit_text_input() {
-                        restore_hint_overlay(&key_hints, hints_enabled.get());
-                    } else {
-                        show_text_input(&key_hints, &browser.mode.borrow());
-                    }
-                }
-                gdk::Key::BackSpace => {
-                    browser.update_text_input(None);
-                    show_text_input(&key_hints, &browser.mode.borrow());
-                }
-                _ if !modifiers.intersects(
-                    gdk::ModifierType::CONTROL_MASK
-                        | gdk::ModifierType::ALT_MASK
-                        | gdk::ModifierType::SUPER_MASK,
-                ) =>
-                {
-                    if let Some(character) = key.to_unicode()
-                        && !character.is_control()
-                    {
-                        browser.update_text_input(Some(character));
-                        show_text_input(&key_hints, &browser.mode.borrow());
-                    }
-                }
-                _ => return glib::Propagation::Proceed,
+            if key == gdk::Key::Escape {
+                browser.cancel_text_input();
+                restore_hint_overlay(&key_hints, hints_enabled.get());
+                return glib::Propagation::Stop;
             }
-            return glib::Propagation::Stop;
+            return glib::Propagation::Proceed;
         }
 
         if let Some(browser) = browser.upgrade()
@@ -938,7 +991,7 @@ fn install_keyboard_controller(
                         if browser.dispatch(command, &window) {
                             window.close();
                         } else if browser.mode.borrow().text_input().is_some() {
-                            show_text_input(&key_hints, &browser.mode.borrow());
+                            key_hints.set_visible(false);
                         }
                     }
                 }
@@ -983,30 +1036,6 @@ fn show_find_query(grid: &gtk::Grid, query: &str, matched: bool) {
         "No match"
     };
     populate_hint_grid(grid, [("Find".to_owned(), value), (String::new(), state)]);
-    grid.set_visible(true);
-}
-
-fn show_text_input(grid: &gtk::Grid, mode: &AppMode) {
-    let Some(input) = mode.text_input() else {
-        return;
-    };
-    let value = if input.value().is_empty() {
-        "Type a name…"
-    } else {
-        input.value()
-    };
-    let state = input.error().unwrap_or(if input.will_replace_on_type() {
-        "Selected · Type to replace · Esc cancel"
-    } else {
-        "Enter accept · Esc cancel"
-    });
-    populate_hint_grid(
-        grid,
-        [
-            (input.kind().label().to_owned(), value),
-            (String::new(), state),
-        ],
-    );
     grid.set_visible(true);
 }
 

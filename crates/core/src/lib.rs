@@ -247,6 +247,12 @@ impl TextInputMode {
         self.error = None;
     }
 
+    pub fn set_value(&mut self, value: impl Into<String>) {
+        self.value = value.into();
+        self.replace_on_type = false;
+        self.error = None;
+    }
+
     fn validate(&mut self) -> bool {
         self.error = if self.value.is_empty() {
             Some("Name cannot be empty")
