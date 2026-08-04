@@ -72,6 +72,15 @@ pub fn settings_path() -> Option<PathBuf> {
 #[serde(default)]
 pub struct Settings {
     pub ui: UiSettings,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub bookmarks: Vec<Bookmark>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct Bookmark {
+    pub key: String,
+    pub label: String,
+    pub uri: String,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -119,11 +128,37 @@ pub fn load_settings(path: Option<&Path>) -> (Settings, Option<String>) {
     }
     match fs::read_to_string(path)
         .map_err(|error| error.to_string())
-        .and_then(|source| toml::from_str(&source).map_err(|error| error.to_string()))
+        .and_then(|source| toml::from_str::<Settings>(&source).map_err(|error| error.to_string()))
     {
-        Ok(settings) => (settings, None),
+        Ok(settings) => match validate_bookmarks(&settings.bookmarks) {
+            Ok(()) => (settings, None),
+            Err(error) => (Settings::default(), Some(error)),
+        },
         Err(error) => (Settings::default(), Some(error)),
     }
+}
+
+fn validate_bookmarks(bookmarks: &[Bookmark]) -> Result<(), String> {
+    let mut keys = HashSet::new();
+    for bookmark in bookmarks {
+        let mut characters = bookmark.key.chars();
+        let Some(key) = characters.next() else {
+            return Err("bookmark key is empty".to_owned());
+        };
+        if characters.next().is_some() || !key.is_ascii_alphanumeric() {
+            return Err(format!("invalid bookmark key `{}`", bookmark.key));
+        }
+        if ['g', 'h', 'd', 'r'].contains(&key) || !keys.insert(key) {
+            return Err(format!("duplicate or reserved bookmark key `{key}`"));
+        }
+        if bookmark.label.trim().is_empty() {
+            return Err(format!("bookmark `{key}` has an empty label"));
+        }
+        if !bookmark.uri.contains("://") {
+            return Err(format!("bookmark `{key}` has an invalid URI"));
+        }
+    }
+    Ok(())
 }
 
 pub fn save_settings(path: &Path, settings: &Settings) -> Result<(), String> {
@@ -265,11 +300,59 @@ mod tests {
         let path = dir.path().join("config.toml");
         let mut settings = Settings::default();
         settings.ui.hints_enabled = true;
+        settings.bookmarks.push(Bookmark {
+            key: "w".to_owned(),
+            label: "Work".to_owned(),
+            uri: "file:///srv/work".to_owned(),
+        });
         save_settings(&path, &settings).unwrap();
         assert_eq!(load_settings(Some(&path)).0, settings);
         fs::write(&path, "[ui]\nhints_enabled = true\n").unwrap();
         let loaded = load_settings(Some(&path)).0;
         assert!(loaded.ui.hints_enabled);
         assert!(loaded.ui.confirm_permanent_delete);
+    }
+
+    #[test]
+    fn empty_bookmarks_are_not_written() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        save_settings(&path, &Settings::default()).unwrap();
+        assert!(!fs::read_to_string(path).unwrap().contains("bookmarks"));
+    }
+
+    #[test]
+    fn rejects_reserved_duplicate_and_invalid_bookmarks() {
+        assert!(
+            validate_bookmarks(&[Bookmark {
+                key: "h".to_owned(),
+                label: "Other home".to_owned(),
+                uri: "file:///tmp".to_owned()
+            }])
+            .is_err()
+        );
+        assert!(
+            validate_bookmarks(&[Bookmark {
+                key: "w".to_owned(),
+                label: "Work".to_owned(),
+                uri: "/tmp".to_owned()
+            }])
+            .is_err()
+        );
+        assert!(
+            validate_bookmarks(&[
+                Bookmark {
+                    key: "w".to_owned(),
+                    label: "One".to_owned(),
+                    uri: "file:///one".to_owned()
+                },
+                Bookmark {
+                    key: "w".to_owned(),
+                    label: "Two".to_owned(),
+                    uri: "file:///two".to_owned()
+                },
+            ])
+            .is_err()
+        );
     }
 }
