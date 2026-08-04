@@ -12,9 +12,9 @@ use std::{
 use directory_pane::DirectoryPane;
 use gtk::{gdk, gio, glib, prelude::*};
 use pathpilot_core::{
-    AppCommand, AppMode, COMMAND_REFERENCE, ClipboardAction, ClipboardItem, CommandPalette,
-    FileEntry, FileKind, FilenameFind, InputModeKind, KeyResult, KeySequenceParser, Location,
-    NavigationState, OperationClipboard, OperationId,
+    AppCommand, AppMode, ClipboardAction, ClipboardItem, CommandPalette, FileEntry, FileKind,
+    FilenameFind, InputModeKind, KeyResult, KeySequenceParser, Location, NavigationState,
+    OperationClipboard, OperationId,
 };
 use pathpilot_operations::{
     BatchOperationResult, OperationHandle, OperationResult, TransferSpec, copy_items,
@@ -1029,15 +1029,41 @@ fn install_keyboard_controller(
     if let Some(error) = warning {
         warn!(%error, "invalid user keymap; using built-in defaults");
     }
+    if let Some(browser) = browser.upgrade() {
+        browser
+            .command_palette
+            .borrow_mut()
+            .set_key_labels(keymap.key_labels());
+    }
+    let mut reference = keymap.command_reference();
+    reference.extend([
+        ("f".to_owned(), "Find by name"),
+        (":".to_owned(), "Command palette"),
+        ("F1".to_owned(), "Hide hints"),
+    ]);
+    let command_reference = Rc::new(reference);
+    let settings_path = pathpilot_config::settings_path();
+    let (settings, settings_warning) = pathpilot_config::load_settings(settings_path.as_deref());
+    if let Some(error) = settings_warning {
+        warn!(%error, "invalid settings; using defaults");
+    }
+    let hints_initially_enabled = settings.ui.hints_enabled;
+    let settings = Rc::new(RefCell::new(settings));
     let parser = Rc::new(RefCell::new(KeySequenceParser::with_bindings(
         Duration::MAX,
         keymap.bindings().to_vec(),
     )));
-    let hints_enabled = Rc::new(Cell::new(false));
+    let hints_enabled = Rc::new(Cell::new(hints_initially_enabled));
     let controller = gtk::EventControllerKey::new();
     controller.set_propagation_phase(gtk::PropagationPhase::Capture);
     let weak_window = window.downgrade();
+    if hints_initially_enabled {
+        show_command_reference(key_hints, &command_reference);
+    }
     let key_hints = key_hints.clone();
+    let command_reference = command_reference.clone();
+    let settings = settings.clone();
+    let settings_path = settings_path.clone();
     controller.connect_key_pressed(move |_, key, _, modifiers| {
         if let Some(browser) = browser.upgrade()
             && *browser.mode.borrow() == AppMode::Command
@@ -1049,7 +1075,7 @@ fn install_keyboard_controller(
                 gdk::Key::Return | gdk::Key::KP_Enter => browser.submit_command_palette(),
                 _ => return glib::Propagation::Proceed,
             }
-            restore_hint_overlay(&key_hints, hints_enabled.get());
+            restore_hint_panel(&key_hints, hints_enabled.get(), &command_reference);
             return glib::Propagation::Stop;
         }
 
@@ -1058,7 +1084,7 @@ fn install_keyboard_controller(
         {
             if key == gdk::Key::Escape {
                 browser.cancel_text_input();
-                restore_hint_overlay(&key_hints, hints_enabled.get());
+                restore_hint_panel(&key_hints, hints_enabled.get(), &command_reference);
                 return glib::Propagation::Stop;
             }
             return glib::Propagation::Proceed;
@@ -1070,11 +1096,11 @@ fn install_keyboard_controller(
             match key {
                 gdk::Key::Escape => {
                     browser.cancel_find();
-                    restore_hint_overlay(&key_hints, hints_enabled.get());
+                    restore_hint_panel(&key_hints, hints_enabled.get(), &command_reference);
                 }
                 gdk::Key::Return | gdk::Key::KP_Enter => {
                     browser.accept_find();
-                    restore_hint_overlay(&key_hints, hints_enabled.get());
+                    restore_hint_panel(&key_hints, hints_enabled.get(), &command_reference);
                 }
                 gdk::Key::BackSpace => {
                     let (query, matched) = browser.update_find(None);
@@ -1103,7 +1129,7 @@ fn install_keyboard_controller(
                 .upgrade()
                 .is_some_and(|browser| browser.leave_visual())
             {
-                restore_hint_overlay(&key_hints, hints_enabled.get());
+                restore_hint_panel(&key_hints, hints_enabled.get(), &command_reference);
                 return glib::Propagation::Stop;
             }
             if browser
@@ -1114,7 +1140,7 @@ fn install_keyboard_controller(
             }
             parser.borrow_mut().reset();
             if hints_enabled.get() {
-                show_command_reference(&key_hints);
+                show_command_reference(&key_hints, &command_reference);
             } else {
                 key_hints.set_visible(false);
             }
@@ -1137,6 +1163,11 @@ fn install_keyboard_controller(
                 gdk::Key::c => Some(AppCommand::Copy),
                 gdk::Key::x => Some(AppCommand::Cut),
                 gdk::Key::v => Some(AppCommand::Paste),
+                gdk::Key::q => Some(AppCommand::Quit),
+                gdk::Key::n | gdk::Key::N if modifiers.contains(gdk::ModifierType::SHIFT_MASK) => {
+                    Some(AppCommand::CreateDirectory)
+                }
+                gdk::Key::n => Some(AppCommand::CreateFile),
                 _ => None,
             }
         } else {
@@ -1155,8 +1186,14 @@ fn install_keyboard_controller(
             parser.borrow_mut().reset();
             let enabled = !hints_enabled.get();
             hints_enabled.set(enabled);
+            settings.borrow_mut().ui.hints_enabled = enabled;
+            if let Some(path) = settings_path.as_deref()
+                && let Err(error) = pathpilot_config::save_settings(path, &settings.borrow())
+            {
+                warn!(%error, "could not persist settings");
+            }
             if enabled {
-                show_command_reference(&key_hints);
+                show_command_reference(&key_hints, &command_reference);
             }
             key_hints.set_visible(enabled);
             return glib::Propagation::Stop;
@@ -1210,7 +1247,7 @@ fn install_keyboard_controller(
         match key_result {
             KeyResult::Command(command) => {
                 if hints_enabled.get() {
-                    show_command_reference(&key_hints);
+                    show_command_reference(&key_hints, &command_reference);
                 } else {
                     key_hints.set_visible(false);
                 }
@@ -1243,9 +1280,9 @@ fn install_keyboard_controller(
     window.add_controller(controller);
 }
 
-fn restore_hint_overlay(grid: &gtk::Grid, hints_enabled: bool) {
+fn restore_hint_panel(grid: &gtk::Grid, hints_enabled: bool, reference: &[(String, &'static str)]) {
     if hints_enabled {
-        show_command_reference(grid);
+        show_command_reference(grid, reference);
     } else {
         grid.set_visible(false);
     }
@@ -1266,12 +1303,10 @@ fn show_find_query(grid: &gtk::Grid, query: &str, matched: bool) {
     grid.set_visible(true);
 }
 
-fn show_command_reference(grid: &gtk::Grid) {
+fn show_command_reference(grid: &gtk::Grid, reference: &[(String, &'static str)]) {
     populate_hint_grid(
         grid,
-        COMMAND_REFERENCE
-            .iter()
-            .map(|hint| (hint.keys.to_owned(), hint.label)),
+        reference.iter().map(|(keys, label)| (keys.clone(), *label)),
     );
     grid.set_visible(true);
 }

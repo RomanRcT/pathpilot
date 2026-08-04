@@ -2,7 +2,7 @@
 
 PathPilot is an experimental keyboard-first graphical file manager for Linux, built with Rust, GTK 4, and GIO. It combines ranger-style three-column navigation, Vim-inspired controls, conventional mouse interaction, and responsive file previews.
 
-The project is in early development. The initial milestones, Phase 2 preview pipeline, and Phase 3 file-operation foundation are implemented. See [`pathpilot_project_plan.md`](pathpilot_project_plan.md) for the complete product plan. PathPilot currently requires GTK 4.12 or newer.
+The project is in early development. The initial milestones and Phases 2–4 are implemented. See [`pathpilot_project_plan.md`](pathpilot_project_plan.md) for the complete product plan. PathPilot currently requires GTK 4.12 or newer.
 
 ## Current features
 
@@ -48,9 +48,9 @@ The application opens the directory from which it is started. Use `l` or double 
 
 The next major steps are:
 
-1. Complete modal input handling, visual selection, command palette, and TOML keymap configuration.
-2. Improve batch conflict policies and surface a richer operation summary.
-3. Add drag-and-drop, open-with integration, accessibility, diagnostics, and Fedora packaging.
+1. Improve batch conflict policies and surface a richer operation summary.
+2. Add drag-and-drop, open-with integration, accessibility, and diagnostics.
+3. Complete Fedora packaging and performance regression coverage.
 
 Detailed phases, performance targets, and exit criteria are maintained in [`pathpilot_project_plan.md`](pathpilot_project_plan.md).
 

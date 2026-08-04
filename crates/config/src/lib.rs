@@ -1,7 +1,7 @@
 //! Loading and validation for user-configurable keyboard bindings.
 
 use pathpilot_core::{AppCommand, KeyBinding};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, HashSet},
     fs,
@@ -34,6 +34,27 @@ impl Keymap {
     pub fn bindings(&self) -> &[KeyBinding] {
         &self.bindings
     }
+
+    pub fn key_labels(&self) -> Vec<(AppCommand, String)> {
+        let mut labels = std::collections::HashMap::<AppCommand, Vec<String>>::new();
+        for binding in &self.bindings {
+            labels
+                .entry(binding.command)
+                .or_default()
+                .push(binding.sequence.clone());
+        }
+        labels
+            .into_iter()
+            .map(|(command, keys)| (command, keys.join(" / ")))
+            .collect()
+    }
+
+    pub fn command_reference(&self) -> Vec<(String, &'static str)> {
+        self.bindings
+            .iter()
+            .map(|binding| (binding.sequence.clone(), binding.label))
+            .collect()
+    }
 }
 
 pub fn default_path() -> Option<PathBuf> {
@@ -41,6 +62,64 @@ pub fn default_path() -> Option<PathBuf> {
         .map(PathBuf::from)
         .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".config")))
         .map(|base| base.join("pathpilot/keymap.toml"))
+}
+
+pub fn settings_path() -> Option<PathBuf> {
+    default_path().and_then(|path| path.parent().map(|parent| parent.join("config.toml")))
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(default)]
+pub struct Settings {
+    pub ui: UiSettings,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(default)]
+pub struct UiSettings {
+    pub hints_enabled: bool,
+    pub confirm_permanent_delete: bool,
+    pub preview_delay_ms: u64,
+    pub compact_rows: bool,
+}
+
+impl Default for UiSettings {
+    fn default() -> Self {
+        Self {
+            hints_enabled: false,
+            confirm_permanent_delete: true,
+            preview_delay_ms: 75,
+            compact_rows: true,
+        }
+    }
+}
+
+pub fn load_settings(path: Option<&Path>) -> (Settings, Option<String>) {
+    let Some(path) = path else {
+        return (Settings::default(), None);
+    };
+    if !path.exists() {
+        return (Settings::default(), None);
+    }
+    match fs::read_to_string(path)
+        .map_err(|error| error.to_string())
+        .and_then(|source| toml::from_str(&source).map_err(|error| error.to_string()))
+    {
+        Ok(settings) => (settings, None),
+        Err(error) => (Settings::default(), Some(error)),
+    }
+}
+
+pub fn save_settings(path: &Path, settings: &Settings) -> Result<(), String> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| "settings path has no parent".to_owned())?;
+    fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+    fs::write(
+        path,
+        toml::to_string_pretty(settings).map_err(|error| error.to_string())?,
+    )
+    .map_err(|error| error.to_string())
 }
 
 pub fn load(path: &Path) -> Result<Keymap, String> {
@@ -161,5 +240,18 @@ mod tests {
         let (keymap, warning) = load_or_default(Some(&path));
         assert!(!keymap.bindings().is_empty());
         assert!(warning.is_some());
+    }
+    #[test]
+    fn settings_round_trip_and_missing_fields_use_defaults() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        let mut settings = Settings::default();
+        settings.ui.hints_enabled = true;
+        save_settings(&path, &settings).unwrap();
+        assert_eq!(load_settings(Some(&path)).0, settings);
+        fs::write(&path, "[ui]\nhints_enabled = true\n").unwrap();
+        let loaded = load_settings(Some(&path)).0;
+        assert!(loaded.ui.hints_enabled);
+        assert!(loaded.ui.confirm_permanent_delete);
     }
 }

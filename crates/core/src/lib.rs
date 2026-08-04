@@ -548,7 +548,7 @@ impl GenerationTracker {
 }
 
 /// An action understood by the application independently of its input source.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum AppCommand {
     NavigateUp,
     NavigateDown,
@@ -647,12 +647,24 @@ pub const PALETTE_COMMANDS: &[PaletteCommand] = &[
 pub struct CommandPalette {
     query: String,
     selected: usize,
+    key_labels: std::collections::HashMap<AppCommand, String>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PaletteMatch {
+    pub command: AppCommand,
+    pub title: &'static str,
+    pub keys: String,
 }
 
 impl CommandPalette {
     pub fn reset(&mut self) {
         self.query.clear();
         self.selected = 0;
+    }
+
+    pub fn set_key_labels(&mut self, labels: impl IntoIterator<Item = (AppCommand, String)>) {
+        self.key_labels = labels.into_iter().collect();
     }
 
     pub fn set_query(&mut self, query: impl Into<String>) {
@@ -664,16 +676,27 @@ impl CommandPalette {
         &self.query
     }
 
-    pub fn matches(&self) -> Vec<PaletteCommand> {
+    pub fn matches(&self) -> Vec<PaletteMatch> {
         let terms = self.query.to_lowercase();
         PALETTE_COMMANDS
             .iter()
-            .copied()
             .filter(|item| {
+                let keys = self
+                    .key_labels
+                    .get(&item.command)
+                    .map_or(item.keys, String::as_str);
                 terms.split_whitespace().all(|term| {
-                    item.title.to_lowercase().contains(term)
-                        || item.keys.to_lowercase().contains(term)
+                    item.title.to_lowercase().contains(term) || keys.to_lowercase().contains(term)
                 })
+            })
+            .map(|item| PaletteMatch {
+                command: item.command,
+                title: item.title,
+                keys: self
+                    .key_labels
+                    .get(&item.command)
+                    .cloned()
+                    .unwrap_or_else(|| item.keys.to_owned()),
             })
             .collect()
     }
@@ -1158,6 +1181,28 @@ mod tests {
         );
         palette.set_query("not a command");
         assert_eq!(palette.selected_command(), None);
+        palette.set_key_labels([(AppCommand::Copy, "zz".to_owned())]);
+        palette.set_query("ctrl+c");
+        assert_eq!(palette.selected_command(), None);
+        palette.set_query("zz");
+        assert_eq!(palette.selected_command(), Some(AppCommand::Copy));
+    }
+
+    #[test]
+    fn key_parser_accepts_runtime_bindings() {
+        let mut parser = KeySequenceParser::with_bindings(
+            Duration::MAX,
+            vec![KeyBinding {
+                sequence: "z".to_owned(),
+                command: AppCommand::Copy,
+                label: "copy",
+            }],
+        );
+        assert_eq!(
+            parser.feed('z', Instant::now()),
+            KeyResult::Command(AppCommand::Copy)
+        );
+        assert_eq!(parser.feed('y', Instant::now()), KeyResult::Ignored);
     }
 
     #[test]
