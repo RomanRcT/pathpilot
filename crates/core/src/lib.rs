@@ -612,6 +612,9 @@ pub enum AppCommand {
     Trash,
     PermanentDelete,
     Copy,
+    CopyName,
+    CopyDirectoryPath,
+    CopyFullPath,
     Cut,
     Paste,
     ToggleVisual,
@@ -668,8 +671,23 @@ pub const PALETTE_COMMANDS: &[PaletteCommand] = &[
     },
     PaletteCommand {
         command: AppCommand::Copy,
-        title: "Copy selection",
-        keys: "y / Ctrl+C",
+        title: "Copy selection for paste",
+        keys: "y y / Ctrl+C",
+    },
+    PaletteCommand {
+        command: AppCommand::CopyName,
+        title: "Copy filename as text",
+        keys: "y n",
+    },
+    PaletteCommand {
+        command: AppCommand::CopyDirectoryPath,
+        title: "Copy containing directory path",
+        keys: "y d",
+    },
+    PaletteCommand {
+        command: AppCommand::CopyFullPath,
+        title: "Copy full path as text",
+        keys: "y p",
     },
     PaletteCommand {
         command: AppCommand::Cut,
@@ -991,7 +1009,10 @@ fn default_key_bindings() -> Vec<KeyBinding> {
         ("h", AppCommand::GoParent, "parent"),
         ("q", AppCommand::Quit, "quit"),
         ("r", AppCommand::Rename, "rename"),
-        ("y", AppCommand::Copy, "copy"),
+        ("yy", AppCommand::Copy, "copy for paste"),
+        ("yn", AppCommand::CopyName, "copy filename"),
+        ("yd", AppCommand::CopyDirectoryPath, "copy directory path"),
+        ("yp", AppCommand::CopyFullPath, "copy full path"),
         ("x", AppCommand::Cut, "cut"),
         ("p", AppCommand::Paste, "paste"),
         ("v", AppCommand::ToggleVisual, "visual selection"),
@@ -1109,7 +1130,6 @@ mod tests {
         );
         assert_eq!(parser.feed('l', now), KeyResult::Command(AppCommand::Enter));
         assert_eq!(parser.feed('q', now), KeyResult::Command(AppCommand::Quit));
-        assert_eq!(parser.feed('y', now), KeyResult::Command(AppCommand::Copy));
         assert_eq!(parser.feed('x', now), KeyResult::Command(AppCommand::Cut));
         assert_eq!(parser.feed('p', now), KeyResult::Command(AppCommand::Paste));
         assert_eq!(
@@ -1222,6 +1242,10 @@ mod tests {
             ('a', 'd', AppCommand::CreateDirectory),
             ('d', 'd', AppCommand::Trash),
             ('d', 'D', AppCommand::PermanentDelete),
+            ('y', 'y', AppCommand::Copy),
+            ('y', 'n', AppCommand::CopyName),
+            ('y', 'd', AppCommand::CopyDirectoryPath),
+            ('y', 'p', AppCommand::CopyFullPath),
         ] {
             let mut parser = KeySequenceParser::default();
             assert!(matches!(parser.feed(prefix, now), KeyResult::Pending(_)));
