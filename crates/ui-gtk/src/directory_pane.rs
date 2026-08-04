@@ -5,7 +5,7 @@ use std::{
 };
 
 use gtk::{gio, glib, prelude::*};
-use pathpilot_core::{FileEntry, FileKind, GenerationTracker, Location};
+use pathpilot_core::{FileEntry, FileKind, GenerationTracker, Location, present_location};
 use pathpilot_fs_local::{DirectoryEvent, load_directory};
 use tracing::{debug, info, warn};
 
@@ -22,6 +22,7 @@ pub struct DirectoryPane {
     pub selection: gtk::MultiSelection,
     store: gio::ListStore,
     title: gtk::Label,
+    role: String,
     status: gtk::Label,
     load_state: Rc<LoadState>,
     cursor: Rc<Cell<u32>>,
@@ -30,7 +31,7 @@ pub struct DirectoryPane {
 }
 
 impl DirectoryPane {
-    pub fn new(title: &str) -> Self {
+    pub fn new(role: &str) -> Self {
         let store = gio::ListStore::new::<glib::BoxedAnyObject>();
         let sorter = gtk::CustomSorter::new(|left, right| {
             let left = left
@@ -90,7 +91,7 @@ impl DirectoryPane {
             .child(&list)
             .build();
         let title = gtk::Label::builder()
-            .label(title)
+            .label(role)
             .xalign(0.0)
             .ellipsize(gtk::pango::EllipsizeMode::Middle)
             .margin_start(8)
@@ -120,6 +121,7 @@ impl DirectoryPane {
             selection,
             store,
             title,
+            role: role.to_owned(),
             status,
             load_state: Rc::new(LoadState::default()),
             cursor,
@@ -131,7 +133,15 @@ impl DirectoryPane {
     pub fn load(&self, location: &Location, on_finished: impl Fn(bool) + 'static) {
         self.cancel();
         self.store.remove_all();
-        self.title.set_label(location.uri());
+        let presentation = present_location(
+            location,
+            std::env::var_os("HOME")
+                .as_deref()
+                .map(std::path::Path::new),
+        );
+        self.title
+            .set_label(&format!("{}  {}", self.role, presentation.compact));
+        self.title.set_tooltip_text(Some(&presentation.full));
         self.status.set_label("Loading…");
         let generation = self.load_state.generation.borrow_mut().advance();
         let started = Instant::now();
@@ -209,6 +219,7 @@ impl DirectoryPane {
         self.cancel();
         self.store.remove_all();
         self.title.set_label(title);
+        self.title.set_tooltip_text(None);
         self.status.set_label(message);
     }
 

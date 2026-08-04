@@ -21,6 +21,54 @@ impl Location {
     }
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct LocationPresentation {
+    pub compact: String,
+    pub full: String,
+}
+
+pub fn present_location(
+    location: &Location,
+    home: Option<&std::path::Path>,
+) -> LocationPresentation {
+    let Some(encoded_path) = location.uri().strip_prefix("file://") else {
+        return LocationPresentation {
+            compact: location.uri().to_owned(),
+            full: location.uri().to_owned(),
+        };
+    };
+    let full = percent_decode(encoded_path).unwrap_or_else(|| encoded_path.to_owned());
+    let compact = home
+        .and_then(std::path::Path::to_str)
+        .and_then(|home| {
+            (full == home).then(|| "~".to_owned()).or_else(|| {
+                full.strip_prefix(home)
+                    .filter(|rest| rest.starts_with('/'))
+                    .map(|rest| format!("~{rest}"))
+            })
+        })
+        .unwrap_or_else(|| full.clone());
+    LocationPresentation { compact, full }
+}
+
+fn percent_decode(value: &str) -> Option<String> {
+    let bytes = value.as_bytes();
+    let mut decoded = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] == b'%' {
+            let hex = bytes.get(index + 1..index + 3)?;
+            let text = std::str::from_utf8(hex).ok()?;
+            decoded.push(u8::from_str_radix(text, 16).ok()?);
+            index += 3;
+        } else {
+            decoded.push(bytes[index]);
+            index += 1;
+        }
+    }
+    String::from_utf8(decoded).ok()
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum FileKind {
     Directory,
@@ -986,6 +1034,19 @@ mod tests {
     fn locations_keep_backend_neutral_uris() {
         let location = Location::new("file:///tmp/example");
         assert_eq!(location.uri(), "file:///tmp/example");
+    }
+
+    #[test]
+    fn presents_local_paths_without_file_scheme_and_preserves_remote_uris() {
+        let local = present_location(
+            &Location::new("file:///home/roman/My%20Files"),
+            Some(std::path::Path::new("/home/roman")),
+        );
+        assert_eq!(local.compact, "~/My Files");
+        assert_eq!(local.full, "/home/roman/My Files");
+        let remote = present_location(&Location::new("sftp://host/home/roman"), None);
+        assert_eq!(remote.compact, "sftp://host/home/roman");
+        assert_eq!(remote.full, remote.compact);
     }
 
     #[test]
