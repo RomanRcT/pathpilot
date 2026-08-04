@@ -16,7 +16,7 @@ use gtk::{gdk, gio, glib, prelude::*};
 use pathpilot_core::{
     AppCommand, AppMode, ClipboardAction, ClipboardItem, CommandPalette, FileEntry, FileKind,
     FilenameFind, InputModeKind, KeyResult, KeySequenceParser, Location, NavigationState,
-    OperationClipboard, OperationId, PaneLayout,
+    OperationClipboard, OperationId, PaneLayout, present_location,
 };
 use pathpilot_operations::{
     BatchOperationResult, OperationHandle, OperationResult, TransferSpec, copy_items,
@@ -1059,7 +1059,14 @@ impl Browser {
     ) {
         let location = self.navigation.borrow().current().clone();
         self.start_git_probe(&location);
-        self.location_label.set_label(location.uri());
+        let presentation = present_location(
+            &location,
+            std::env::var_os("HOME")
+                .as_deref()
+                .map(std::path::Path::new),
+        );
+        self.location_label.set_label(&presentation.compact);
+        self.location_label.set_tooltip_text(Some(location.uri()));
         self.status.set_label("NORMAL  Loading…");
 
         let weak = Rc::downgrade(self);
