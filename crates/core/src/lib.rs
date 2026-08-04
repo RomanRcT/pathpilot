@@ -317,6 +317,7 @@ pub enum AppMode {
     #[default]
     Normal,
     Find,
+    Command,
     TextInput(TextInputMode),
     Visual(VisualSelection),
 }
@@ -327,6 +328,14 @@ impl AppMode {
             return false;
         }
         *self = Self::Find;
+        true
+    }
+
+    pub fn begin_command(&mut self) -> bool {
+        if *self != Self::Normal {
+            return false;
+        }
+        *self = Self::Command;
         true
     }
 
@@ -557,6 +566,138 @@ pub enum AppCommand {
     Cut,
     Paste,
     ToggleVisual,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct PaletteCommand {
+    pub command: AppCommand,
+    pub title: &'static str,
+    pub keys: &'static str,
+}
+
+pub const PALETTE_COMMANDS: &[PaletteCommand] = &[
+    PaletteCommand {
+        command: AppCommand::CreateFile,
+        title: "Create file",
+        keys: "a f",
+    },
+    PaletteCommand {
+        command: AppCommand::CreateDirectory,
+        title: "Create directory",
+        keys: "a d",
+    },
+    PaletteCommand {
+        command: AppCommand::Rename,
+        title: "Rename selected item",
+        keys: "r / F2",
+    },
+    PaletteCommand {
+        command: AppCommand::Copy,
+        title: "Copy selection",
+        keys: "y / Ctrl+C",
+    },
+    PaletteCommand {
+        command: AppCommand::Cut,
+        title: "Cut selection",
+        keys: "x / Ctrl+X",
+    },
+    PaletteCommand {
+        command: AppCommand::Paste,
+        title: "Paste",
+        keys: "p / Ctrl+V",
+    },
+    PaletteCommand {
+        command: AppCommand::Trash,
+        title: "Move selection to Trash",
+        keys: "d d / Delete",
+    },
+    PaletteCommand {
+        command: AppCommand::PermanentDelete,
+        title: "Delete selection permanently",
+        keys: "d D / Shift+Delete",
+    },
+    PaletteCommand {
+        command: AppCommand::ToggleVisual,
+        title: "Toggle Visual selection",
+        keys: "v",
+    },
+    PaletteCommand {
+        command: AppCommand::GoParent,
+        title: "Go to parent directory",
+        keys: "h",
+    },
+    PaletteCommand {
+        command: AppCommand::GoFirst,
+        title: "Go to first item",
+        keys: "g g",
+    },
+    PaletteCommand {
+        command: AppCommand::GoLast,
+        title: "Go to last item",
+        keys: "G",
+    },
+    PaletteCommand {
+        command: AppCommand::Quit,
+        title: "Quit PathPilot",
+        keys: "q",
+    },
+];
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct CommandPalette {
+    query: String,
+    selected: usize,
+}
+
+impl CommandPalette {
+    pub fn reset(&mut self) {
+        self.query.clear();
+        self.selected = 0;
+    }
+
+    pub fn set_query(&mut self, query: impl Into<String>) {
+        self.query = query.into();
+        self.selected = 0;
+    }
+
+    pub fn query(&self) -> &str {
+        &self.query
+    }
+
+    pub fn matches(&self) -> Vec<PaletteCommand> {
+        let terms = self.query.to_lowercase();
+        PALETTE_COMMANDS
+            .iter()
+            .copied()
+            .filter(|item| {
+                terms.split_whitespace().all(|term| {
+                    item.title.to_lowercase().contains(term)
+                        || item.keys.to_lowercase().contains(term)
+                })
+            })
+            .collect()
+    }
+
+    pub fn move_selection(&mut self, offset: i32) {
+        let count = self.matches().len();
+        if count == 0 {
+            self.selected = 0;
+            return;
+        }
+        self.selected = if offset < 0 {
+            self.selected.saturating_sub(offset.unsigned_abs() as usize)
+        } else {
+            self.selected.saturating_add(offset as usize).min(count - 1)
+        };
+    }
+
+    pub fn selected_index(&self) -> usize {
+        self.selected
+    }
+
+    pub fn selected_command(&self) -> Option<AppCommand> {
+        self.matches().get(self.selected).map(|item| item.command)
+    }
 }
 
 /// Result of feeding a key to the normal-mode parser.
@@ -981,6 +1122,37 @@ mod tests {
         assert!(!move_clipboard.should_clear_after_move(false));
         assert!(move_clipboard.should_clear_after_move(true));
         assert_eq!(move_clipboard.status_label(), "CUT: source.txt");
+    }
+
+    #[test]
+    fn command_palette_filters_by_title_and_key_and_clamps_selection() {
+        let mut palette = CommandPalette::default();
+        assert_eq!(palette.selected_command(), Some(AppCommand::CreateFile));
+        palette.set_query("permanent");
+        assert_eq!(
+            palette.selected_command(),
+            Some(AppCommand::PermanentDelete)
+        );
+        palette.set_query("ctrl+c");
+        assert_eq!(palette.selected_command(), Some(AppCommand::Copy));
+        palette.set_query("create");
+        palette.move_selection(10);
+        assert_eq!(
+            palette.selected_command(),
+            Some(AppCommand::CreateDirectory)
+        );
+        palette.set_query("not a command");
+        assert_eq!(palette.selected_command(), None);
+    }
+
+    #[test]
+    fn command_mode_has_explicit_entry_and_cancel_transitions() {
+        let mut mode = AppMode::default();
+        assert!(mode.begin_command());
+        assert_eq!(mode, AppMode::Command);
+        assert!(!mode.begin_find());
+        assert!(mode.cancel());
+        assert_eq!(mode, AppMode::Normal);
     }
 
     #[test]

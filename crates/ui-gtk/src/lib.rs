@@ -12,9 +12,9 @@ use std::{
 use directory_pane::DirectoryPane;
 use gtk::{gdk, gio, glib, prelude::*};
 use pathpilot_core::{
-    AppCommand, AppMode, COMMAND_REFERENCE, ClipboardAction, ClipboardItem, FileEntry, FileKind,
-    FilenameFind, InputModeKind, KeyResult, KeySequenceParser, Location, NavigationState,
-    OperationClipboard, OperationId,
+    AppCommand, AppMode, COMMAND_REFERENCE, ClipboardAction, ClipboardItem, CommandPalette,
+    FileEntry, FileKind, FilenameFind, InputModeKind, KeyResult, KeySequenceParser, Location,
+    NavigationState, OperationClipboard, OperationId,
 };
 use pathpilot_operations::{
     BatchOperationResult, OperationHandle, OperationResult, TransferSpec, copy_items,
@@ -32,6 +32,7 @@ struct Browser {
     status: gtk::Label,
     next_operation_id: Cell<u64>,
     find: RefCell<FilenameFind>,
+    command_palette: RefCell<CommandPalette>,
     mode: RefCell<AppMode>,
     input_source: RefCell<Option<Location>>,
     input_bar: gtk::Box,
@@ -89,6 +90,7 @@ impl Browser {
                 .build(),
             next_operation_id: Cell::new(1),
             find: RefCell::new(FilenameFind::default()),
+            command_palette: RefCell::new(CommandPalette::default()),
             mode: RefCell::new(AppMode::default()),
             input_source: RefCell::new(None),
             input_bar,
@@ -127,6 +129,9 @@ impl Browser {
             };
             if updated {
                 browser.refresh_input_bar();
+            } else if *browser.mode.borrow() == AppMode::Command {
+                browser.command_palette.borrow_mut().set_query(entry.text());
+                browser.refresh_command_palette();
             }
         });
         let weak = Rc::downgrade(self);
@@ -134,7 +139,9 @@ impl Browser {
             let Some(browser) = weak.upgrade() else {
                 return;
             };
-            if browser.submit_text_input() {
+            if *browser.mode.borrow() == AppMode::Command {
+                browser.submit_command_palette();
+            } else if browser.submit_text_input() {
                 browser.hide_input_bar();
             } else {
                 browser.refresh_input_bar();
@@ -431,6 +438,78 @@ impl Browser {
         let position = self.current.cursor_position();
         self.find.borrow_mut().start(position);
         self.status.set_label("FIND  Type a filename");
+    }
+
+    fn start_command_palette(&self) {
+        if !self.mode.borrow_mut().begin_command() {
+            return;
+        }
+        self.command_palette.borrow_mut().reset();
+        self.input_title.set_label("Command");
+        self.input_entry
+            .set_placeholder_text(Some("Type a command…"));
+        self.input_entry.set_text("");
+        self.input_bar.set_visible(true);
+        self.refresh_command_palette();
+        self.input_entry.grab_focus();
+        self.status.set_label("COMMAND  Search and run an action");
+    }
+
+    fn refresh_command_palette(&self) {
+        let palette = self.command_palette.borrow();
+        let matches = palette.matches();
+        let description = if matches.is_empty() {
+            "No matching command".to_owned()
+        } else {
+            matches
+                .iter()
+                .enumerate()
+                .skip(palette.selected_index().saturating_sub(5))
+                .take(6)
+                .map(|(index, item)| {
+                    let marker = if index == palette.selected_index() {
+                        "›"
+                    } else {
+                        " "
+                    };
+                    format!("{marker} {}  [{}]", item.title, item.keys)
+                })
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+        self.input_help.set_label(&description);
+    }
+
+    fn move_command_palette(&self, offset: i32) {
+        self.command_palette.borrow_mut().move_selection(offset);
+        self.refresh_command_palette();
+    }
+
+    fn cancel_command_palette(&self) {
+        self.mode.borrow_mut().cancel();
+        self.hide_input_bar();
+        self.input_entry.set_placeholder_text(Some("Type a name…"));
+        self.status.set_label("NORMAL  Command palette cancelled");
+    }
+
+    fn submit_command_palette(self: &Rc<Self>) {
+        let command = self.command_palette.borrow().selected_command();
+        self.mode.borrow_mut().cancel();
+        self.hide_input_bar();
+        self.input_entry.set_placeholder_text(Some("Type a name…"));
+        let Some(command) = command else {
+            self.status.set_label("NORMAL  No matching command");
+            return;
+        };
+        if let Some(window) = self
+            .current
+            .widget
+            .root()
+            .and_downcast::<gtk::ApplicationWindow>()
+            && self.dispatch(command, &window)
+        {
+            window.close();
+        }
     }
 
     fn update_find(&self, character: Option<char>) -> (String, bool) {
@@ -953,6 +1032,20 @@ fn install_keyboard_controller(
     let key_hints = key_hints.clone();
     controller.connect_key_pressed(move |_, key, _, modifiers| {
         if let Some(browser) = browser.upgrade()
+            && *browser.mode.borrow() == AppMode::Command
+        {
+            match key {
+                gdk::Key::Escape => browser.cancel_command_palette(),
+                gdk::Key::Up => browser.move_command_palette(-1),
+                gdk::Key::Down => browser.move_command_palette(1),
+                gdk::Key::Return | gdk::Key::KP_Enter => browser.submit_command_palette(),
+                _ => return glib::Propagation::Proceed,
+            }
+            restore_hint_overlay(&key_hints, hints_enabled.get());
+            return glib::Propagation::Stop;
+        }
+
+        if let Some(browser) = browser.upgrade()
             && browser.mode.borrow().text_input().is_some()
         {
             if key == gdk::Key::Escape {
@@ -1016,6 +1109,18 @@ fn install_keyboard_controller(
                 show_command_reference(&key_hints);
             } else {
                 key_hints.set_visible(false);
+            }
+            return glib::Propagation::Stop;
+        }
+        let opens_command_palette = key.to_unicode() == Some(':')
+            || (matches!(key, gdk::Key::p | gdk::Key::P)
+                && modifiers
+                    .contains(gdk::ModifierType::CONTROL_MASK | gdk::ModifierType::SHIFT_MASK));
+        if opens_command_palette {
+            parser.borrow_mut().reset();
+            key_hints.set_visible(false);
+            if let Some(browser) = browser.upgrade() {
+                browser.start_command_palette();
             }
             return glib::Propagation::Stop;
         }
