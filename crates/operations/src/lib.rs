@@ -39,6 +39,32 @@ pub struct OperationResult {
     pub result: Result<(), OperationError>,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TransferSpec {
+    pub source: Location,
+    pub destination: Location,
+}
+
+#[derive(Clone, Debug)]
+pub struct BatchFailure {
+    pub location: Location,
+    pub error: OperationError,
+}
+
+#[derive(Clone, Debug)]
+pub struct BatchOperationResult {
+    pub id: OperationId,
+    pub resulting_locations: Vec<Location>,
+    pub failures: Vec<BatchFailure>,
+    pub cancelled: bool,
+}
+
+impl BatchOperationResult {
+    pub fn succeeded(&self) -> bool {
+        !self.cancelled && self.failures.is_empty()
+    }
+}
+
 #[derive(Clone)]
 pub struct OperationHandle {
     id: OperationId,
@@ -263,6 +289,290 @@ pub fn move_item(
         move |result| publish(id, kind, Some(resulting_location), result, on_finished),
     );
     OperationHandle { id, cancellable }
+}
+
+pub fn copy_items(
+    id: OperationId,
+    transfers: Vec<TransferSpec>,
+    on_progress: impl Fn(OperationProgress) + 'static,
+    on_finished: impl Fn(BatchOperationResult) + 'static,
+) -> OperationHandle {
+    let total = transfers.len();
+    run_batch(
+        id,
+        total,
+        on_progress,
+        on_finished,
+        move |cancellable, sender| {
+            let mut resulting_locations = Vec::new();
+            let mut failures = Vec::new();
+            for (index, transfer) in transfers.into_iter().enumerate() {
+                if cancellable.is_cancelled() {
+                    break;
+                }
+                let source = gio::File::for_uri(transfer.source.uri());
+                let destination = gio::File::for_uri(transfer.destination.uri());
+                let result =
+                    if invalid_transfer_destination(&transfer.source, &transfer.destination) {
+                        Err(glib::Error::new(
+                            gio::IOErrorEnum::InvalidArgument,
+                            "Invalid destination",
+                        ))
+                    } else {
+                        copy_tree(&source, &destination, &cancellable)
+                    };
+                collect_batch_result(
+                    result,
+                    transfer.source,
+                    Some(transfer.destination),
+                    &mut resulting_locations,
+                    &mut failures,
+                );
+                let _ = sender.send(BatchEvent::Progress(top_level_progress(index + 1, total)));
+            }
+            BatchWorkerResult {
+                resulting_locations,
+                failures,
+                cancelled: cancellable.is_cancelled(),
+            }
+        },
+    )
+}
+
+pub fn move_items(
+    id: OperationId,
+    transfers: Vec<TransferSpec>,
+    on_progress: impl Fn(OperationProgress) + 'static,
+    on_finished: impl Fn(BatchOperationResult) + 'static,
+) -> OperationHandle {
+    let total = transfers.len();
+    run_batch(
+        id,
+        total,
+        on_progress,
+        on_finished,
+        move |cancellable, sender| {
+            let mut resulting_locations = Vec::new();
+            let mut failures = Vec::new();
+            for (index, transfer) in transfers.into_iter().enumerate() {
+                if cancellable.is_cancelled() {
+                    break;
+                }
+                let result =
+                    if invalid_transfer_destination(&transfer.source, &transfer.destination) {
+                        Err(glib::Error::new(
+                            gio::IOErrorEnum::InvalidArgument,
+                            "Invalid destination",
+                        ))
+                    } else {
+                        gio::File::for_uri(transfer.source.uri()).move_(
+                            &gio::File::for_uri(transfer.destination.uri()),
+                            gio::FileCopyFlags::NONE,
+                            Some(&cancellable),
+                            None,
+                        )
+                    };
+                collect_batch_result(
+                    result,
+                    transfer.source,
+                    Some(transfer.destination),
+                    &mut resulting_locations,
+                    &mut failures,
+                );
+                let _ = sender.send(BatchEvent::Progress(top_level_progress(index + 1, total)));
+            }
+            BatchWorkerResult {
+                resulting_locations,
+                failures,
+                cancelled: cancellable.is_cancelled(),
+            }
+        },
+    )
+}
+
+pub fn trash_items(
+    id: OperationId,
+    targets: Vec<Location>,
+    on_progress: impl Fn(OperationProgress) + 'static,
+    on_finished: impl Fn(BatchOperationResult) + 'static,
+) -> OperationHandle {
+    run_target_batch(
+        id,
+        targets,
+        on_progress,
+        on_finished,
+        |file, cancellable| file.trash(Some(cancellable)),
+    )
+}
+
+pub fn delete_items(
+    id: OperationId,
+    targets: Vec<Location>,
+    on_progress: impl Fn(OperationProgress) + 'static,
+    on_finished: impl Fn(BatchOperationResult) + 'static,
+) -> OperationHandle {
+    run_target_batch(
+        id,
+        targets,
+        on_progress,
+        on_finished,
+        |file, cancellable| remove_tree(file, Some(cancellable), None),
+    )
+}
+
+fn run_target_batch(
+    id: OperationId,
+    targets: Vec<Location>,
+    on_progress: impl Fn(OperationProgress) + 'static,
+    on_finished: impl Fn(BatchOperationResult) + 'static,
+    operation: impl Fn(&gio::File, &gio::Cancellable) -> Result<(), glib::Error> + Send + 'static,
+) -> OperationHandle {
+    let total = targets.len();
+    run_batch(
+        id,
+        total,
+        on_progress,
+        on_finished,
+        move |cancellable, sender| {
+            let mut failures = Vec::new();
+            for (index, target) in targets.into_iter().enumerate() {
+                if cancellable.is_cancelled() {
+                    break;
+                }
+                if let Err(error) = operation(&gio::File::for_uri(target.uri()), &cancellable) {
+                    failures.push(BatchFailure {
+                        location: target,
+                        error: classify_error(error),
+                    });
+                }
+                let _ = sender.send(BatchEvent::Progress(top_level_progress(index + 1, total)));
+            }
+            BatchWorkerResult {
+                resulting_locations: Vec::new(),
+                failures,
+                cancelled: cancellable.is_cancelled(),
+            }
+        },
+    )
+}
+
+fn top_level_progress(completed: usize, total: usize) -> OperationProgress {
+    OperationProgress {
+        completed_items: completed as u64,
+        total_items: Some(total as u64),
+        ..OperationProgress::default()
+    }
+}
+
+fn collect_batch_result(
+    result: Result<(), glib::Error>,
+    source: Location,
+    destination: Option<Location>,
+    successes: &mut Vec<Location>,
+    failures: &mut Vec<BatchFailure>,
+) {
+    match result {
+        Ok(()) => successes.extend(destination),
+        Err(error) => failures.push(BatchFailure {
+            location: source,
+            error: classify_error(error),
+        }),
+    }
+}
+
+struct BatchWorkerResult {
+    resulting_locations: Vec<Location>,
+    failures: Vec<BatchFailure>,
+    cancelled: bool,
+}
+
+enum BatchEvent {
+    Progress(OperationProgress),
+    Finished(BatchWorkerResult),
+}
+
+fn run_batch(
+    id: OperationId,
+    total: usize,
+    on_progress: impl Fn(OperationProgress) + 'static,
+    on_finished: impl Fn(BatchOperationResult) + 'static,
+    operation: impl FnOnce(gio::Cancellable, mpsc::Sender<BatchEvent>) -> BatchWorkerResult
+    + Send
+    + 'static,
+) -> OperationHandle {
+    let cancellable = gio::Cancellable::new();
+    let worker_cancellable = cancellable.clone();
+    let (sender, receiver) = mpsc::channel();
+    std::thread::spawn(move || {
+        let result = operation(worker_cancellable, sender.clone());
+        let _ = sender.send(BatchEvent::Finished(result));
+    });
+    on_progress(top_level_progress(0, total));
+    glib::timeout_add_local(Duration::from_millis(16), move || {
+        loop {
+            match receiver.try_recv() {
+                Ok(BatchEvent::Progress(progress)) => on_progress(progress),
+                Ok(BatchEvent::Finished(result)) => {
+                    on_finished(BatchOperationResult {
+                        id,
+                        resulting_locations: result.resulting_locations,
+                        failures: result.failures,
+                        cancelled: result.cancelled,
+                    });
+                    return glib::ControlFlow::Break;
+                }
+                Err(TryRecvError::Empty) => return glib::ControlFlow::Continue,
+                Err(TryRecvError::Disconnected) => return glib::ControlFlow::Break,
+            }
+        }
+    });
+    OperationHandle { id, cancellable }
+}
+
+fn copy_tree(
+    source: &gio::File,
+    destination: &gio::File,
+    cancellable: &gio::Cancellable,
+) -> Result<(), glib::Error> {
+    if destination.query_exists(Some(cancellable)) {
+        return Err(glib::Error::new(
+            gio::IOErrorEnum::Exists,
+            "The destination already exists",
+        ));
+    }
+    let info = source.query_info(
+        "standard::type",
+        gio::FileQueryInfoFlags::NOFOLLOW_SYMLINKS,
+        Some(cancellable),
+    )?;
+    if info.file_type() != gio::FileType::Directory {
+        return source.copy(
+            destination,
+            gio::FileCopyFlags::NOFOLLOW_SYMLINKS | gio::FileCopyFlags::ALL_METADATA,
+            Some(cancellable),
+            None,
+        );
+    }
+    destination.make_directory(Some(cancellable))?;
+    let result = (|| {
+        let enumerator = source.enumerate_children(
+            "standard::name",
+            gio::FileQueryInfoFlags::NOFOLLOW_SYMLINKS,
+            Some(cancellable),
+        )?;
+        while let Some(child) = enumerator.next_file(Some(cancellable))? {
+            copy_tree(
+                &source.child(child.name()),
+                &destination.child(child.name()),
+                cancellable,
+            )?;
+        }
+        Ok(())
+    })();
+    if result.is_err() {
+        let _ = remove_tree(destination, None::<&gio::Cancellable>, None);
+    }
+    result
 }
 
 fn invalid_transfer_destination(source: &Location, destination: &Location) -> bool {
@@ -700,6 +1010,73 @@ mod tests {
         }));
         main_loop.run();
         result.borrow_mut().take().expect("operation completes")
+    }
+
+    fn run_batch_operation(
+        start: impl FnOnce(Box<dyn Fn(BatchOperationResult)>) -> OperationHandle,
+    ) -> BatchOperationResult {
+        let result = Rc::new(RefCell::new(None));
+        let main_loop = glib::MainLoop::new(None, false);
+        let _handle = start(Box::new({
+            let result = result.clone();
+            let main_loop = main_loop.clone();
+            move |value| {
+                *result.borrow_mut() = Some(value);
+                main_loop.quit();
+            }
+        }));
+        main_loop.run();
+        result
+            .borrow_mut()
+            .take()
+            .expect("batch operation completes")
+    }
+
+    #[test]
+    fn batch_copy_continues_after_an_item_failure() {
+        let _guard = gio_test_lock();
+        let temporary = tempfile::tempdir().expect("create temporary directory");
+        let first = temporary.path().join("first.txt");
+        let second = temporary.path().join("second.txt");
+        let first_copy = temporary.path().join("first-copy.txt");
+        let conflict = temporary.path().join("conflict.txt");
+        fs::write(&first, b"first").expect("write first fixture");
+        fs::write(&second, b"second").expect("write second fixture");
+        fs::write(&conflict, b"existing").expect("write conflict fixture");
+        let location = |path: &std::path::Path| Location::new(gio::File::for_path(path).uri());
+        let result = run_batch_operation(|callback| {
+            copy_items(
+                OperationId::new(20),
+                vec![
+                    TransferSpec {
+                        source: location(&first),
+                        destination: location(&first_copy),
+                    },
+                    TransferSpec {
+                        source: location(&second),
+                        destination: location(&conflict),
+                    },
+                ],
+                |_| {},
+                callback,
+            )
+        });
+        assert!(!result.succeeded());
+        assert_eq!(result.resulting_locations, vec![location(&first_copy)]);
+        assert_eq!(result.failures.len(), 1);
+        assert_eq!(result.failures[0].location, location(&second));
+        assert_eq!(
+            result.failures[0].error.kind,
+            OperationErrorKind::AlreadyExists
+        );
+        assert_eq!(
+            fs::read(first_copy).expect("read successful copy"),
+            b"first"
+        );
+        assert_eq!(
+            fs::read(conflict).expect("conflict is preserved"),
+            b"existing"
+        );
     }
 
     #[test]
