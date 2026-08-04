@@ -6,7 +6,7 @@ mod preview_pane;
 use std::{
     cell::{Cell, RefCell},
     rc::{Rc, Weak},
-    time::Instant,
+    time::{Duration, Instant},
 };
 
 use directory_pane::DirectoryPane;
@@ -1024,7 +1024,15 @@ fn install_keyboard_controller(
     browser: Weak<Browser>,
     key_hints: &gtk::Grid,
 ) {
-    let parser = Rc::new(RefCell::new(KeySequenceParser::default()));
+    let path = pathpilot_config::default_path();
+    let (keymap, warning) = pathpilot_config::load_or_default(path.as_deref());
+    if let Some(error) = warning {
+        warn!(%error, "invalid user keymap; using built-in defaults");
+    }
+    let parser = Rc::new(RefCell::new(KeySequenceParser::with_bindings(
+        Duration::MAX,
+        keymap.bindings().to_vec(),
+    )));
     let hints_enabled = Rc::new(Cell::new(false));
     let controller = gtk::EventControllerKey::new();
     controller.set_propagation_phase(gtk::PropagationPhase::Capture);

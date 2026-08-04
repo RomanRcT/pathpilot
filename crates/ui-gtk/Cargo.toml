@@ -10,6 +10,7 @@ gio.workspace = true
 glib.workspace = true
 gtk.workspace = true
 pathpilot-core.workspace = true
+pathpilot-config.workspace = true
 pathpilot-fs-local.workspace = true
 pathpilot-operations.workspace = true
 pathpilot-preview.workspace = true
