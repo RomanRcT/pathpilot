@@ -2,7 +2,7 @@
 
 PathPilot is an experimental keyboard-first graphical file manager for Linux, built with Rust, GTK 4, and GIO. It combines ranger-style three-column navigation, Vim-inspired controls, conventional mouse interaction, and responsive file previews.
 
-The project is in early development. The technical spike, navigation foundation, and preview prototype are implemented; mutating file operations are not available yet. See [`pathpilot_project_plan.md`](pathpilot_project_plan.md) for the complete product plan. PathPilot currently requires GTK 4.12 or newer.
+The project is in early development. The initial milestones, Phase 2 preview pipeline, and Phase 3 file-operation foundation are implemented. See [`pathpilot_project_plan.md`](pathpilot_project_plan.md) for the complete product plan. PathPilot currently requires GTK 4.12 or newer.
 
 ## Current features
 
@@ -23,13 +23,17 @@ The project is in early development. The technical spike, navigation foundation,
 - A status line with the selected index and entry count.
 - Structured startup, model creation, and selection tracing.
 - GTK-independent commands and key-sequence parsing.
+- Keyboard-driven create, rename, trash, copy, move, and paste operations.
+- Recursive directory copy with progress, cancellation, partial-result cleanup, and no silent overwrites.
+- Explicit “Keep Both” conflict handling with unique destination names.
+- Separately confirmed permanent deletion of files and non-empty directory trees.
 
 The application opens the directory from which it is started. Use `l` or double click to enter a directory and `h` to return to its parent.
 
 ## Current limitations
 
 - Local filesystem browsing only.
-- Read-only navigation: create, rename, copy, move, trash, and delete are not implemented.
+- Single-item operations only; multi-selection will follow the Phase 4 visual mode.
 - No tabs, configurable keymap, filtering, or hidden-file toggle yet.
 - No PDF, archive, office document, audio, or video previews.
 - No remote filesystem backends or plugin API.
@@ -39,9 +43,9 @@ The application opens the directory from which it is started. Use `l` or double 
 
 The next major steps are:
 
-1. Safe file operations with progress, cancellation, and conflict handling.
-2. Complete modal input handling, visual selection, command palette, and TOML keymap configuration.
-3. Drag-and-drop, open-with integration, accessibility, diagnostics, and Fedora packaging.
+1. Complete modal input handling, visual selection, command palette, and TOML keymap configuration.
+2. Extend visual selection into safe multi-item operation batches.
+3. Add drag-and-drop, open-with integration, accessibility, diagnostics, and Fedora packaging.
 
 Detailed phases, performance targets, and exit criteria are maintained in [`pathpilot_project_plan.md`](pathpilot_project_plan.md).
 

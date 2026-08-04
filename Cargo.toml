@@ -4,6 +4,7 @@ members = [
     "crates/app",
     "crates/core",
     "crates/fs-local",
+    "crates/operations",
     "crates/preview",
     "crates/ui-gtk",
 ]
@@ -15,12 +16,14 @@ license = "GPL-3.0-or-later"
 rust-version = "1.85"
 
 [workspace.dependencies]
-gio = "0.21"
+gio = { version = "0.21", features = ["v2_72"] }
 gdk-pixbuf = "0.21"
 glib = "0.21"
+futures-util = "0.3"
 gtk = { package = "gtk4", version = "0.10", features = ["v4_12"] }
 pathpilot-core = { path = "crates/core" }
 pathpilot-fs-local = { path = "crates/fs-local" }
+pathpilot-operations = { path = "crates/operations" }
 pathpilot-preview = { path = "crates/preview" }
 pathpilot-ui-gtk = { path = "crates/ui-gtk" }
 tracing = "0.1"

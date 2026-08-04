@@ -194,6 +194,17 @@ impl DirectoryPane {
             .map(|object| object.borrow::<FileEntry>().clone())
     }
 
+    pub fn names(&self) -> Vec<String> {
+        (0..self.selection.n_items())
+            .filter_map(|position| {
+                self.selection
+                    .item(position)
+                    .and_downcast::<glib::BoxedAnyObject>()
+                    .map(|object| object.borrow::<FileEntry>().display_name.clone())
+            })
+            .collect()
+    }
+
     pub fn select_position(&self, position: u32) {
         if position < self.selection.n_items() {
             self.selection.set_selected(position);
