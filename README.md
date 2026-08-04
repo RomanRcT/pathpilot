@@ -1,6 +1,6 @@
 # PathPilot
 
-PathPilot is an experimental keyboard-first graphical file manager for Linux. The current code implements the Phase 0 GTK 4 performance spike and Milestone 3 real-directory model described in [`pathpilot_project_plan.md`](pathpilot_project_plan.md). It requires GTK 4.12 or newer.
+PathPilot is an experimental keyboard-first graphical file manager for Linux. The current code implements the initial milestones, the Phase 2 preview pipeline, and the Phase 3 file-operation foundation described in [`pathpilot_project_plan.md`](pathpilot_project_plan.md). It requires GTK 4.12 or newer.
 
 ## Current features
 
@@ -23,6 +23,10 @@ PathPilot is an experimental keyboard-first graphical file manager for Linux. Th
 - A status line with the selected index and entry count.
 - Structured startup, model creation, and selection tracing.
 - GTK-independent commands and key-sequence parsing.
+- Keyboard-driven create, rename, trash, copy, move, and paste operations.
+- Recursive directory copy with progress, cancellation, partial-result cleanup, and no silent overwrites.
+- Explicit “Keep Both” conflict handling with unique destination names.
+- Separately confirmed permanent deletion of files and non-empty directory trees.
 
 The application opens the directory from which it is started. Use `l` or double click to enter a directory and `h` to return to its parent.
 

@@ -1,7 +1,13 @@
 //! Safe, cancelable GIO primitives for mutating local filesystem operations.
 
 use gio::prelude::*;
-use pathpilot_core::{Location, OperationId, OperationKind};
+use std::{
+    collections::VecDeque,
+    sync::mpsc::{self, TryRecvError},
+    time::Duration,
+};
+
+use pathpilot_core::{Location, OperationId, OperationKind, OperationProgress};
 use tracing::{debug, warn};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -148,6 +154,21 @@ pub fn trash(
     OperationHandle { id, cancellable }
 }
 
+pub fn delete_permanently(
+    id: OperationId,
+    target: &Location,
+    on_progress: impl Fn(OperationProgress) + 'static,
+    on_finished: impl Fn(OperationResult) + 'static,
+) -> OperationHandle {
+    let kind = OperationKind::Delete {
+        target: target.clone(),
+    };
+    run_background_tree_operation(id, kind, None, on_progress, on_finished, {
+        let target = target.uri().to_owned();
+        move |cancellable, sender| delete_tree(&target, &cancellable, &sender)
+    })
+}
+
 pub fn copy_item(
     id: OperationId,
     source: &Location,
@@ -155,7 +176,40 @@ pub fn copy_item(
     on_progress: impl Fn(u64, Option<u64>) + 'static,
     on_finished: impl Fn(OperationResult) + 'static,
 ) -> OperationHandle {
-    transfer_item(id, source, destination, false, on_progress, on_finished)
+    copy_item_with_progress(
+        id,
+        source,
+        destination,
+        move |progress| on_progress(progress.completed_bytes, progress.total_bytes),
+        on_finished,
+    )
+}
+
+pub fn copy_item_with_progress(
+    id: OperationId,
+    source: &Location,
+    destination: &Location,
+    on_progress: impl Fn(OperationProgress) + 'static,
+    on_finished: impl Fn(OperationResult) + 'static,
+) -> OperationHandle {
+    let kind = OperationKind::Copy {
+        source: source.clone(),
+        destination: destination.clone(),
+    };
+    if invalid_transfer_destination(source, destination) {
+        return finish_invalid_destination(id, kind, on_finished);
+    }
+    let source_uri = source.uri().to_owned();
+    let destination_uri = destination.uri().to_owned();
+    let resulting_location = destination.clone();
+    run_background_tree_operation(
+        id,
+        kind,
+        Some(resulting_location),
+        on_progress,
+        on_finished,
+        move |cancellable, sender| copy_tree(&source_uri, &destination_uri, &cancellable, &sender),
+    )
 }
 
 pub fn move_item(
@@ -165,69 +219,279 @@ pub fn move_item(
     on_progress: impl Fn(u64, Option<u64>) + 'static,
     on_finished: impl Fn(OperationResult) + 'static,
 ) -> OperationHandle {
-    transfer_item(id, source, destination, true, on_progress, on_finished)
-}
-
-fn transfer_item(
-    id: OperationId,
-    source: &Location,
-    destination: &Location,
-    moving: bool,
-    on_progress: impl Fn(u64, Option<u64>) + 'static,
-    on_finished: impl Fn(OperationResult) + 'static,
-) -> OperationHandle {
-    let kind = if moving {
-        OperationKind::Move {
-            source: source.clone(),
-            destination: destination.clone(),
-        }
-    } else {
-        OperationKind::Copy {
-            source: source.clone(),
-            destination: destination.clone(),
-        }
+    let kind = OperationKind::Move {
+        source: source.clone(),
+        destination: destination.clone(),
     };
     let source_file = gio::File::for_uri(source.uri());
     let destination_file = gio::File::for_uri(destination.uri());
     let cancellable = gio::Cancellable::new();
-    if source_file == destination_file || destination_file.has_prefix(&source_file) {
-        glib::idle_add_local_once(move || {
-            on_finished(OperationResult {
-                id,
-                kind,
-                resulting_location: None,
-                result: Err(OperationError {
-                    kind: OperationErrorKind::InvalidDestination,
-                    message: "An item cannot be copied or moved into itself".to_owned(),
-                }),
-            });
-        });
-        return OperationHandle { id, cancellable };
+    if invalid_transfer_destination(source, destination) {
+        return finish_invalid_destination(id, kind, on_finished);
     }
     let progress = Box::new(move |current: i64, total: i64| {
         on_progress(current.max(0) as u64, (total >= 0).then_some(total as u64));
     });
     let resulting_location = destination.clone();
-    if moving {
-        source_file.move_async(
-            &destination_file,
-            gio::FileCopyFlags::NONE,
-            glib::Priority::DEFAULT,
-            Some(&cancellable),
-            Some(progress),
-            move |result| publish(id, kind, Some(resulting_location), result, on_finished),
-        );
-    } else {
-        source_file.copy_async(
-            &destination_file,
-            gio::FileCopyFlags::NONE,
-            glib::Priority::DEFAULT,
-            Some(&cancellable),
-            Some(progress),
-            move |result| publish(id, kind, Some(resulting_location), result, on_finished),
-        );
-    }
+    source_file.move_async(
+        &destination_file,
+        gio::FileCopyFlags::NONE,
+        glib::Priority::DEFAULT,
+        Some(&cancellable),
+        Some(progress),
+        move |result| publish(id, kind, Some(resulting_location), result, on_finished),
+    );
     OperationHandle { id, cancellable }
+}
+
+fn invalid_transfer_destination(source: &Location, destination: &Location) -> bool {
+    let source = gio::File::for_uri(source.uri());
+    let destination = gio::File::for_uri(destination.uri());
+    source == destination || destination.has_prefix(&source)
+}
+
+fn finish_invalid_destination(
+    id: OperationId,
+    kind: OperationKind,
+    on_finished: impl Fn(OperationResult) + 'static,
+) -> OperationHandle {
+    let cancellable = gio::Cancellable::new();
+    glib::idle_add_local_once(move || {
+        on_finished(OperationResult {
+            id,
+            kind,
+            resulting_location: None,
+            result: Err(OperationError {
+                kind: OperationErrorKind::InvalidDestination,
+                message: "An item cannot be copied or moved into itself".to_owned(),
+            }),
+        });
+    });
+    OperationHandle { id, cancellable }
+}
+
+enum BackgroundEvent {
+    Progress(OperationProgress),
+    Finished(Result<(), glib::Error>),
+}
+
+fn run_background_tree_operation(
+    id: OperationId,
+    kind: OperationKind,
+    resulting_location: Option<Location>,
+    on_progress: impl Fn(OperationProgress) + 'static,
+    on_finished: impl Fn(OperationResult) + 'static,
+    operation: impl FnOnce(gio::Cancellable, mpsc::Sender<BackgroundEvent>) -> Result<(), glib::Error>
+    + Send
+    + 'static,
+) -> OperationHandle {
+    let cancellable = gio::Cancellable::new();
+    let worker_cancellable = cancellable.clone();
+    let (sender, receiver) = mpsc::channel();
+    let worker_sender = sender.clone();
+    std::thread::spawn(move || {
+        let result = operation(worker_cancellable, worker_sender);
+        let _ = sender.send(BackgroundEvent::Finished(result));
+    });
+    glib::timeout_add_local(Duration::from_millis(16), move || {
+        loop {
+            match receiver.try_recv() {
+                Ok(BackgroundEvent::Progress(progress)) => on_progress(progress),
+                Ok(BackgroundEvent::Finished(result)) => {
+                    publish(
+                        id,
+                        kind.clone(),
+                        resulting_location.clone(),
+                        result,
+                        &on_finished,
+                    );
+                    return glib::ControlFlow::Break;
+                }
+                Err(TryRecvError::Empty) => return glib::ControlFlow::Continue,
+                Err(TryRecvError::Disconnected) => {
+                    return glib::ControlFlow::Break;
+                }
+            }
+        }
+    });
+    OperationHandle { id, cancellable }
+}
+
+#[derive(Clone)]
+struct CopyEntry {
+    source: gio::File,
+    destination: gio::File,
+    file_type: gio::FileType,
+    size: u64,
+}
+
+fn copy_tree(
+    source_uri: &str,
+    destination_uri: &str,
+    cancellable: &gio::Cancellable,
+    sender: &mpsc::Sender<BackgroundEvent>,
+) -> Result<(), glib::Error> {
+    let source = gio::File::for_uri(source_uri);
+    let destination = gio::File::for_uri(destination_uri);
+    if destination.query_exists(Some(cancellable)) {
+        return Err(glib::Error::new(
+            gio::IOErrorEnum::Exists,
+            "The destination already exists",
+        ));
+    }
+    let entries = collect_copy_entries(&source, &destination, cancellable)?;
+    let total_items = entries.len() as u64;
+    let total_bytes = entries.iter().map(|entry| entry.size).sum();
+    let mut progress = OperationProgress {
+        total_items: Some(total_items),
+        total_bytes: Some(total_bytes),
+        ..OperationProgress::default()
+    };
+    let mut destination_created = false;
+    for (index, entry) in entries.into_iter().enumerate() {
+        let completed_before = progress.completed_bytes;
+        let result = if entry.file_type == gio::FileType::Directory {
+            entry.destination.make_directory(Some(cancellable))
+        } else {
+            entry.source.copy(
+                &entry.destination,
+                gio::FileCopyFlags::NOFOLLOW_SYMLINKS | gio::FileCopyFlags::ALL_METADATA,
+                Some(cancellable),
+                Some(&mut |current, _| {
+                    progress.completed_bytes = completed_before + current.max(0) as u64;
+                    let _ = sender.send(BackgroundEvent::Progress(progress));
+                }),
+            )
+        };
+        if let Err(error) = result {
+            let safe_to_clean = destination_created
+                || (!error.matches(gio::IOErrorEnum::Exists)
+                    && destination.query_exists(None::<&gio::Cancellable>));
+            if safe_to_clean {
+                let _ = remove_tree(&destination, None, None);
+            }
+            return Err(error);
+        }
+        if index == 0 {
+            destination_created = true;
+        }
+        progress.completed_items += 1;
+        if entry.file_type != gio::FileType::Directory {
+            progress.completed_bytes = completed_before.saturating_add(entry.size);
+        }
+        let _ = sender.send(BackgroundEvent::Progress(progress));
+    }
+    Ok(())
+}
+
+fn collect_copy_entries(
+    source: &gio::File,
+    destination: &gio::File,
+    cancellable: &gio::Cancellable,
+) -> Result<Vec<CopyEntry>, glib::Error> {
+    let mut pending = VecDeque::from([(source.clone(), destination.clone())]);
+    let mut entries = Vec::new();
+    while let Some((source, destination)) = pending.pop_front() {
+        let info = source.query_info(
+            "standard::type,standard::size",
+            gio::FileQueryInfoFlags::NOFOLLOW_SYMLINKS,
+            Some(cancellable),
+        )?;
+        let file_type = info.file_type();
+        entries.push(CopyEntry {
+            source: source.clone(),
+            destination: destination.clone(),
+            file_type,
+            size: if file_type == gio::FileType::Regular {
+                info.size().max(0) as u64
+            } else {
+                0
+            },
+        });
+        if file_type == gio::FileType::Directory {
+            let enumerator = source.enumerate_children(
+                "standard::name",
+                gio::FileQueryInfoFlags::NOFOLLOW_SYMLINKS,
+                Some(cancellable),
+            )?;
+            while let Some(child_info) = enumerator.next_file(Some(cancellable))? {
+                let name = child_info.name();
+                pending.push_back((source.child(&name), destination.child(&name)));
+            }
+        }
+    }
+    entries.sort_by_key(|entry| entry.destination.uri().matches('/').count());
+    Ok(entries)
+}
+
+fn delete_tree(
+    target_uri: &str,
+    cancellable: &gio::Cancellable,
+    sender: &mpsc::Sender<BackgroundEvent>,
+) -> Result<(), glib::Error> {
+    let target = gio::File::for_uri(target_uri);
+    let total_items = count_tree(&target, cancellable)?;
+    let mut progress = OperationProgress {
+        total_items: Some(total_items),
+        ..OperationProgress::default()
+    };
+    remove_tree(&target, Some(cancellable), Some((&mut progress, sender)))
+}
+
+fn count_tree(target: &gio::File, cancellable: &gio::Cancellable) -> Result<u64, glib::Error> {
+    let info = target.query_info(
+        "standard::type",
+        gio::FileQueryInfoFlags::NOFOLLOW_SYMLINKS,
+        Some(cancellable),
+    )?;
+    let mut count = 1;
+    if info.file_type() == gio::FileType::Directory {
+        let enumerator = target.enumerate_children(
+            "standard::name",
+            gio::FileQueryInfoFlags::NOFOLLOW_SYMLINKS,
+            Some(cancellable),
+        )?;
+        while let Some(info) = enumerator.next_file(Some(cancellable))? {
+            count += count_tree(&target.child(info.name()), cancellable)?;
+        }
+    }
+    Ok(count)
+}
+
+fn remove_tree(
+    target: &gio::File,
+    cancellable: Option<&gio::Cancellable>,
+    mut reporting: Option<(&mut OperationProgress, &mpsc::Sender<BackgroundEvent>)>,
+) -> Result<(), glib::Error> {
+    let info = target.query_info(
+        "standard::type",
+        gio::FileQueryInfoFlags::NOFOLLOW_SYMLINKS,
+        cancellable,
+    )?;
+    if info.file_type() == gio::FileType::Directory {
+        let enumerator = target.enumerate_children(
+            "standard::name",
+            gio::FileQueryInfoFlags::NOFOLLOW_SYMLINKS,
+            cancellable,
+        )?;
+        while let Some(info) = enumerator.next_file(cancellable)? {
+            if let Some((progress, sender)) = reporting.as_mut() {
+                remove_tree(
+                    &target.child(info.name()),
+                    cancellable,
+                    Some((*progress, *sender)),
+                )?;
+            } else {
+                remove_tree(&target.child(info.name()), cancellable, None)?;
+            }
+        }
+    }
+    target.delete(cancellable)?;
+    if let Some((progress, sender)) = reporting {
+        progress.completed_items += 1;
+        let _ = sender.send(BackgroundEvent::Progress(*progress));
+    }
+    Ok(())
 }
 
 fn child_for_name(parent: &Location, name: &str) -> Option<gio::File> {
@@ -263,7 +527,12 @@ fn publish(
     result: Result<(), glib::Error>,
     on_finished: impl Fn(OperationResult),
 ) {
-    let result = result.map_err(classify_error);
+    let affected = affected_location(&kind);
+    let result = result.map_err(|error| {
+        let mut error = classify_error(error);
+        error.message = format!("{affected}: {}", error.message);
+        error
+    });
     if let Err(error) = &result {
         warn!(operation_id = id.value(), ?error.kind, "operation failed");
     } else {
@@ -275,6 +544,17 @@ fn publish(
         resulting_location,
         result,
     });
+}
+
+fn affected_location(kind: &OperationKind) -> &str {
+    match kind {
+        OperationKind::CreateFile { parent, .. }
+        | OperationKind::CreateDirectory { parent, .. } => parent.uri(),
+        OperationKind::Rename { source, .. }
+        | OperationKind::Copy { source, .. }
+        | OperationKind::Move { source, .. } => source.uri(),
+        OperationKind::Trash { target } | OperationKind::Delete { target } => target.uri(),
+    }
 }
 
 fn classify_error(error: glib::Error) -> OperationError {
@@ -419,6 +699,57 @@ mod tests {
         assert!(result.result.is_ok());
         assert!(!directory_path.exists());
         assert!(moved_path.join("child.txt").exists());
+    }
+
+    #[test]
+    fn recursively_copies_directories_and_preserves_nested_files() {
+        let _guard = gio_test_lock();
+        let temporary = tempfile::tempdir().expect("create temporary directory");
+        let source_path = temporary.path().join("source-tree");
+        let destination_path = temporary.path().join("copied-tree");
+        fs::create_dir_all(source_path.join("nested/deep")).expect("create source tree");
+        fs::write(source_path.join("root.txt"), b"root").expect("write root file");
+        fs::write(source_path.join("nested/deep/leaf.txt"), b"leaf").expect("write nested file");
+        let source = Location::new(gio::File::for_path(&source_path).uri());
+        let destination = Location::new(gio::File::for_path(&destination_path).uri());
+
+        let result = run_operation(|callback| {
+            copy_item(
+                OperationId::new(9),
+                &source,
+                &destination,
+                |_, _| {},
+                callback,
+            )
+        });
+
+        assert!(result.result.is_ok());
+        assert_eq!(
+            fs::read(destination_path.join("root.txt")).expect("read copied root file"),
+            b"root"
+        );
+        assert_eq!(
+            fs::read(destination_path.join("nested/deep/leaf.txt"))
+                .expect("read copied nested file"),
+            b"leaf"
+        );
+    }
+
+    #[test]
+    fn permanently_deletes_non_empty_directory_trees() {
+        let _guard = gio_test_lock();
+        let temporary = tempfile::tempdir().expect("create temporary directory");
+        let target_path = temporary.path().join("delete-tree");
+        fs::create_dir_all(target_path.join("nested")).expect("create target tree");
+        fs::write(target_path.join("nested/file.txt"), b"payload").expect("write target file");
+        let target = Location::new(gio::File::for_path(&target_path).uri());
+
+        let result = run_operation(|callback| {
+            delete_permanently(OperationId::new(10), &target, |_| {}, callback)
+        });
+
+        assert!(result.result.is_ok());
+        assert!(!target_path.exists());
     }
 
     #[test]

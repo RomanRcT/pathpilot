@@ -16,8 +16,8 @@ use pathpilot_core::{
     KeySequenceParser, Location, NavigationState, OperationClipboard, OperationId, OperationKind,
 };
 use pathpilot_operations::{
-    OperationHandle, OperationResult, copy_item, create_directory, create_file, move_item, rename,
-    trash,
+    OperationHandle, OperationResult, copy_item_with_progress, create_directory, create_file,
+    delete_permanently, move_item, rename, trash,
 };
 use preview_pane::PreviewPane;
 use tracing::{debug, info, info_span, warn};
@@ -129,9 +129,10 @@ impl Browser {
             AppCommand::CreateDirectory => self.prompt_create(window, true),
             AppCommand::Rename => self.prompt_rename(window),
             AppCommand::Trash => self.confirm_trash(window),
+            AppCommand::PermanentDelete => self.confirm_permanent_delete(window),
             AppCommand::Copy => self.store_operation_clipboard(ClipboardAction::Copy),
             AppCommand::Cut => self.store_operation_clipboard(ClipboardAction::Move),
-            AppCommand::Paste => self.paste_operation_clipboard(),
+            AppCommand::Paste => self.paste_operation_clipboard(window),
             AppCommand::Quit => unreachable!("quit handled before navigation dispatch"),
         }
         false
@@ -161,7 +162,7 @@ impl Browser {
         });
     }
 
-    fn paste_operation_clipboard(self: &Rc<Self>) {
+    fn paste_operation_clipboard(self: &Rc<Self>, window: &gtk::ApplicationWindow) {
         if self.active_operation.borrow().is_some() {
             self.status
                 .set_label("NORMAL  Another file operation is already running");
@@ -174,16 +175,47 @@ impl Browser {
         };
         let parent = gio::File::for_uri(self.navigation.borrow().current().uri());
         let destination = Location::new(parent.child(&clipboard.display_name).uri());
-        let weak_progress = Rc::downgrade(self);
-        let progress = move |current: u64, total: Option<u64>| {
-            if let Some(browser) = weak_progress.upgrade() {
-                let message = total.filter(|total| *total > 0).map_or_else(
-                    || format!("NORMAL  Transferred {current} bytes"),
-                    |total| format!("NORMAL  Transferring {current} / {total} bytes"),
+        if gio::File::for_uri(destination.uri()).query_exists(None::<&gio::Cancellable>) {
+            self.confirm_keep_both(window, clipboard, parent);
+            return;
+        }
+        self.start_paste(clipboard, destination);
+    }
+
+    #[allow(deprecated)]
+    fn confirm_keep_both(
+        self: &Rc<Self>,
+        window: &gtk::ApplicationWindow,
+        clipboard: OperationClipboard,
+        parent: gio::File,
+    ) {
+        let dialog = gtk::MessageDialog::builder()
+            .transient_for(window)
+            .modal(true)
+            .message_type(gtk::MessageType::Question)
+            .buttons(gtk::ButtonsType::None)
+            .text("An item with this name already exists")
+            .secondary_text("Keep both items with a unique name?")
+            .build();
+        dialog.add_button("Cancel", gtk::ResponseType::Cancel);
+        dialog.add_button("Keep Both", gtk::ResponseType::Accept);
+        dialog.set_default_response(gtk::ResponseType::Accept);
+        let weak = Rc::downgrade(self);
+        dialog.connect_response(move |dialog, response| {
+            if response == gtk::ResponseType::Accept
+                && let Some(browser) = weak.upgrade()
+            {
+                browser.start_paste(
+                    clipboard.clone(),
+                    unique_destination(&parent, &clipboard.display_name),
                 );
-                browser.status.set_label(&message);
             }
-        };
+            dialog.close();
+        });
+        dialog.present();
+    }
+
+    fn start_paste(self: &Rc<Self>, clipboard: OperationClipboard, destination: Location) {
         let weak_finished = Rc::downgrade(self);
         let finished = move |result| {
             if let Some(browser) = weak_finished.upgrade() {
@@ -193,26 +225,60 @@ impl Browser {
         self.status
             .set_label(&format!("NORMAL  Pasting {}…", clipboard.display_name));
         let handle = match clipboard.action {
-            ClipboardAction::Copy => copy_item(
-                self.operation_id(),
-                &clipboard.source,
-                &destination,
-                progress,
-                finished,
-            ),
-            ClipboardAction::Move => move_item(
-                self.operation_id(),
-                &clipboard.source,
-                &destination,
-                progress,
-                finished,
-            ),
+            ClipboardAction::Copy => {
+                let weak_progress = Rc::downgrade(self);
+                copy_item_with_progress(
+                    self.operation_id(),
+                    &clipboard.source,
+                    &destination,
+                    move |progress| {
+                        if let Some(browser) = weak_progress.upgrade() {
+                            let items = format!(
+                                "{} / {} items",
+                                progress.completed_items,
+                                progress.total_items.unwrap_or(0)
+                            );
+                            let message =
+                                progress.total_bytes.filter(|total| *total > 0).map_or_else(
+                                    || format!("NORMAL  Copying {items}"),
+                                    |total| {
+                                        format!(
+                                            "NORMAL  Copying {items} · {} / {total} bytes",
+                                            progress.completed_bytes
+                                        )
+                                    },
+                                );
+                            browser.status.set_label(&message);
+                        }
+                    },
+                    finished,
+                )
+            }
+            ClipboardAction::Move => {
+                let weak_progress = Rc::downgrade(self);
+                move_item(
+                    self.operation_id(),
+                    &clipboard.source,
+                    &destination,
+                    move |current, total| {
+                        if let Some(browser) = weak_progress.upgrade() {
+                            let message = total.filter(|total| *total > 0).map_or_else(
+                                || format!("NORMAL  Moved {current} bytes"),
+                                |total| format!("NORMAL  Moving {current} / {total} bytes"),
+                            );
+                            browser.status.set_label(&message);
+                        }
+                    },
+                    finished,
+                )
+            }
         };
         *self.active_operation.borrow_mut() = Some(handle);
     }
 
     fn cancel_active_operation(&self) -> bool {
-        let Some(handle) = self.active_operation.borrow_mut().take() else {
+        let active = self.active_operation.borrow();
+        let Some(handle) = active.as_ref() else {
             return false;
         };
         handle.cancel();
@@ -355,8 +421,66 @@ impl Browser {
         dialog.present();
     }
 
+    #[allow(deprecated)]
+    fn confirm_permanent_delete(self: &Rc<Self>, window: &gtk::ApplicationWindow) {
+        let Some(entry) = self.current.selected_entry() else {
+            return;
+        };
+        let dialog = gtk::MessageDialog::builder()
+            .transient_for(window)
+            .modal(true)
+            .message_type(gtk::MessageType::Error)
+            .buttons(gtk::ButtonsType::None)
+            .text("Delete permanently?")
+            .secondary_text(format!(
+                "{}\n\nThis cannot be undone. Directories and all their contents will be removed.",
+                entry.display_name
+            ))
+            .build();
+        dialog.add_button("Cancel", gtk::ResponseType::Cancel);
+        dialog.add_button("Delete Permanently", gtk::ResponseType::Accept);
+        let weak = Rc::downgrade(self);
+        dialog.connect_response(move |dialog, response| {
+            if response == gtk::ResponseType::Accept
+                && let Some(browser) = weak.upgrade()
+            {
+                let weak_progress = Rc::downgrade(&browser);
+                let weak_finished = Rc::downgrade(&browser);
+                browser.status.set_label("NORMAL  Deleting permanently…");
+                let handle = delete_permanently(
+                    browser.operation_id(),
+                    &entry.location,
+                    move |progress| {
+                        if let Some(browser) = weak_progress.upgrade() {
+                            browser.status.set_label(&format!(
+                                "NORMAL  Deleting {} / {} items",
+                                progress.completed_items,
+                                progress.total_items.unwrap_or(0)
+                            ));
+                        }
+                    },
+                    move |result| {
+                        if let Some(browser) = weak_finished.upgrade() {
+                            browser.operation_finished(result);
+                        }
+                    },
+                );
+                *browser.active_operation.borrow_mut() = Some(handle);
+            }
+            dialog.close();
+        });
+        dialog.present();
+    }
+
     fn operation_finished(self: &Rc<Self>, result: OperationResult) {
-        self.active_operation.borrow_mut().take();
+        let is_active = self
+            .active_operation
+            .borrow()
+            .as_ref()
+            .is_some_and(|handle| handle.id() == result.id);
+        if is_active {
+            self.active_operation.borrow_mut().take();
+        }
         let completed_move = matches!(result.kind, OperationKind::Move { .. });
         match result.result {
             Ok(()) => {
@@ -686,6 +810,9 @@ fn install_keyboard_controller(
             Some(command) => KeyResult::Command(command),
             None => match key {
                 gdk::Key::F2 => KeyResult::Command(AppCommand::Rename),
+                gdk::Key::Delete if modifiers.contains(gdk::ModifierType::SHIFT_MASK) => {
+                    KeyResult::Command(AppCommand::PermanentDelete)
+                }
                 gdk::Key::Delete => KeyResult::Command(AppCommand::Trash),
                 _ => {
                     let Some(character) = key.to_unicode() else {
@@ -785,6 +912,25 @@ fn populate_hint_grid<'a>(grid: &gtk::Grid, hints: impl IntoIterator<Item = (Str
         grid.attach(&key, group * 2, row, 1, 1);
         grid.attach(&description, group * 2 + 1, row, 1, 1);
     }
+}
+
+fn unique_destination(parent: &gio::File, display_name: &str) -> Location {
+    let (stem, extension) = display_name
+        .rsplit_once('.')
+        .filter(|(stem, _)| !stem.is_empty())
+        .unwrap_or((display_name, ""));
+    for number in 2_u64.. {
+        let name = if extension.is_empty() {
+            format!("{stem} ({number})")
+        } else {
+            format!("{stem} ({number}).{extension}")
+        };
+        let candidate = parent.child(name);
+        if !candidate.query_exists(None::<&gio::Cancellable>) {
+            return Location::new(candidate.uri());
+        }
+    }
+    unreachable!("the unique-name counter is unbounded")
 }
 
 #[allow(deprecated)]

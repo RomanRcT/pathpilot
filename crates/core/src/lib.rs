@@ -109,6 +109,9 @@ pub enum OperationKind {
     Trash {
         target: Location,
     },
+    Delete {
+        target: Location,
+    },
     Copy {
         source: Location,
         destination: Location,
@@ -308,6 +311,7 @@ pub enum AppCommand {
     CreateDirectory,
     Rename,
     Trash,
+    PermanentDelete,
     Copy,
     Cut,
     Paste,
@@ -387,6 +391,10 @@ pub const COMMAND_REFERENCE: &[CommandHint] = &[
         label: "Delete (trash)",
     },
     CommandHint {
+        keys: "d D / Shift+Delete",
+        label: "Delete permanently",
+    },
+    CommandHint {
         keys: "q",
         label: "Quit",
     },
@@ -432,6 +440,7 @@ impl KeySequenceParser {
                 ('a', 'f') => Some(AppCommand::CreateFile),
                 ('a', 'd') => Some(AppCommand::CreateDirectory),
                 ('d', 'd') => Some(AppCommand::Trash),
+                ('d', 'D') => Some(AppCommand::PermanentDelete),
                 _ => None,
             };
             if let Some(command) = command {
@@ -480,10 +489,16 @@ impl KeySequenceParser {
                     label: "create directory",
                 },
             ],
-            'd' => vec![KeyHint {
-                key: 'd',
-                label: "move to trash",
-            }],
+            'd' => vec![
+                KeyHint {
+                    key: 'd',
+                    label: "move to trash",
+                },
+                KeyHint {
+                    key: 'D',
+                    label: "delete permanently",
+                },
+            ],
             _ => Vec::new(),
         };
         KeyResult::Pending(PendingKeySequence { prefix, hints })
@@ -681,6 +696,7 @@ mod tests {
             ('a', 'f', AppCommand::CreateFile),
             ('a', 'd', AppCommand::CreateDirectory),
             ('d', 'd', AppCommand::Trash),
+            ('d', 'D', AppCommand::PermanentDelete),
         ] {
             let mut parser = KeySequenceParser::default();
             assert!(matches!(parser.feed(prefix, now), KeyResult::Pending(_)));

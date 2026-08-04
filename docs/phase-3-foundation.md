@@ -7,7 +7,10 @@ The first Phase 3 slice establishes a GTK-independent operation model, cancelabl
 - create an empty file;
 - create a directory;
 - rename a file or directory;
-- move an item to the FreeDesktop trash through GIO.
+- move an item to the FreeDesktop trash through GIO;
+- recursively copy files, directories, and symbolic links;
+- move files and complete directory trees;
+- permanently delete files or non-empty directory trees after a separate warning.
 
 Every operation has an `OperationId`, typed `OperationKind`, state, progress fields, a `gio::Cancellable`, and a structured result. Common GIO failures are classified as already exists, permission denied, not found, cancelled, or other.
 
@@ -34,12 +37,16 @@ Every operation has an `OperationId`, typed `OperationKind`, state, progress fie
 
 The `/` binding remains reserved for a future directory-filtering mode.
 
-Copy and move use asynchronous GIO operations, expose byte progress in the status line, reject recursive destinations, and never silently overwrite an existing destination. A copied item remains in the operation clipboard for repeated pastes; a moved item is cleared only after success. `Escape` cancels an active transfer. The initial copy primitive handles files; recursive directory copy remains part of the next operation-engine slice, while GIO move already supports complete directory trees.
+Copy and move run outside the GTK main thread, expose byte progress in the status line, reject recursive destinations, and never silently overwrite an existing destination. Directory copy performs a cancellable preflight, creates directories in parent-first order, copies metadata without following symbolic links, and removes the newly created partial destination after failure or cancellation. A copied item remains in the operation clipboard for repeated pastes; a moved item is cleared only after success. `Escape` cancels an active transfer and the operation remains active until its completion callback arrives.
+
+When a paste destination exists, the UI asks whether to cancel or keep both items. “Keep Both” chooses the first available numbered name, preserving the existing item. A race that creates the same destination after the prompt is still reported as a conflict rather than overwritten.
+
+`d D` or `Shift+Delete` invokes permanent recursive deletion behind a distinct irreversible-action warning. Ordinary `d d` and `Delete` continue to use the desktop trash. Errors include the URI of the affected item.
 
 ## Verification
 
-Temporary-filesystem integration tests create and rename a file, verify that conflicts do not overwrite existing data, and reject path traversal before filesystem access.
+Temporary-filesystem integration tests create and rename a file, verify that conflicts do not overwrite existing data, recursively copy nested directories, permanently delete a non-empty tree, and reject path traversal and recursive transfer destinations.
 
 ## Next slice
 
-Recursive directory copy, multi-selection batches, and interactive conflict policies will extend the operation engine next.
+Multi-selection batches will follow the visual-selection work in Phase 4. Richer conflict policies such as replacing or merging trees remain intentionally deferred; Phase 3 always preserves existing data.
