@@ -12,6 +12,7 @@ use pathpilot_preview::{
     PreviewResult, StyledTextPreview, load_preview,
 };
 use tracing::debug;
+use vte::prelude::*;
 
 use crate::directory_pane::DirectoryPane;
 
@@ -41,6 +42,8 @@ impl Default for PreviewState {
 pub struct PreviewPane {
     pub widget: gtk::Box,
     stack: gtk::Stack,
+    title: gtk::Label,
+    terminal: vte::Terminal,
     directory: DirectoryPane,
     metadata: gtk::Label,
     text: gtk::TextView,
@@ -94,10 +97,15 @@ impl PreviewPane {
             .transition_type(gtk::StackTransitionType::Crossfade)
             .transition_duration(100)
             .build();
+        let terminal = vte::Terminal::new();
+        terminal.set_hexpand(true);
+        terminal.set_vexpand(true);
+        terminal.set_scrollback_lines(10_000);
         stack.add_named(&metadata, Some("metadata"));
         stack.add_named(&text_scroller, Some("text"));
         stack.add_named(&picture, Some("image"));
         stack.add_named(&directory.widget, Some("directory"));
+        stack.add_named(&terminal, Some("editor"));
 
         let title = gtk::Label::builder()
             .label("Preview")
@@ -116,12 +124,35 @@ impl PreviewPane {
         Self {
             widget,
             stack,
+            title,
+            terminal,
             directory,
             metadata,
             text,
             picture,
             state: Rc::new(PreviewState::default()),
         }
+    }
+
+    pub fn terminal(&self) -> vte::Terminal {
+        self.terminal.clone()
+    }
+
+    pub fn show_editor(&self, name: &str) {
+        self.cancel();
+        self.title.set_label(&format!("Editing — {name}"));
+        self.terminal.reset(true, true);
+        self.stack.set_visible_child_name("editor");
+        self.terminal.grab_focus();
+    }
+
+    pub fn leave_editor(&self) {
+        self.title.set_label("Preview");
+    }
+
+    pub fn invalidate(&self, entry: &FileEntry) {
+        self.state.cache.borrow_mut().invalidate(&entry.location);
+        self.state.has_rendered_content.set(false);
     }
 
     pub fn schedule(&self, entry: FileEntry) {

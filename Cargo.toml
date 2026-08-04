@@ -22,6 +22,7 @@ gdk-pixbuf = "0.21"
 glib = "0.21"
 futures-util = "0.3"
 gtk = { package = "gtk4", version = "0.10", features = ["v4_12"] }
+vte = { package = "vte4", version = "0.9" }
 pathpilot-core = { path = "crates/core" }
 pathpilot-config = { path = "crates/config" }
 pathpilot-fs-local = { path = "crates/fs-local" }
