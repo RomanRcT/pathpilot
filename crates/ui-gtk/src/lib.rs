@@ -60,11 +60,9 @@ impl Browser {
             .orientation(gtk::Orientation::Horizontal)
             .spacing(10)
             .halign(gtk::Align::Center)
-            .valign(gtk::Align::End)
-            .margin_bottom(42)
             .visible(false)
             .build();
-        input_bar.add_css_class("key-hint-overlay");
+        input_bar.add_css_class("interaction-panel-content");
         input_bar.append(&input_title);
         input_bar.append(&input_entry);
         input_bar.append(&input_help);
@@ -879,23 +877,25 @@ pub fn build_window(app: &gtk::Application) -> gtk::ApplicationWindow {
     root.append(&browser.location_label);
     root.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
     root.append(&columns);
-    root.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
-    root.append(&browser.status);
-    let overlay = gtk::Overlay::new();
-    overlay.set_child(Some(&root));
+    let interaction_panel = gtk::Box::builder()
+        .orientation(gtk::Orientation::Vertical)
+        .visible(true)
+        .build();
+    interaction_panel.add_css_class("interaction-panel");
     let key_hints = gtk::Grid::builder()
         .halign(gtk::Align::Center)
-        .valign(gtk::Align::End)
-        .margin_bottom(42)
         .column_spacing(12)
         .row_spacing(6)
         .visible(false)
         .build();
-    key_hints.add_css_class("key-hint-overlay");
-    overlay.add_overlay(&key_hints);
-    overlay.add_overlay(&browser.input_bar);
+    key_hints.add_css_class("interaction-panel-content");
+    interaction_panel.append(&key_hints);
+    interaction_panel.append(&browser.input_bar);
+    root.append(&interaction_panel);
+    root.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
+    root.append(&browser.status);
     install_hint_css();
-    window.set_child(Some(&overlay));
+    window.set_child(Some(&root));
 
     browser.connect();
     install_keyboard_controller(&window, Rc::downgrade(&browser), &key_hints);
@@ -1114,16 +1114,14 @@ fn install_keyboard_controller(
                 glib::Propagation::Stop
             }
             KeyResult::Pending(pending) => {
-                if hints_enabled.get() {
-                    populate_hint_grid(
-                        &key_hints,
-                        pending
-                            .hints
-                            .iter()
-                            .map(|hint| (hint.key.to_string(), hint.label)),
-                    );
-                    key_hints.set_visible(true);
-                }
+                populate_hint_grid(
+                    &key_hints,
+                    pending
+                        .hints
+                        .iter()
+                        .map(|hint| (hint.key.to_string(), hint.label)),
+                );
+                key_hints.set_visible(true);
                 glib::Propagation::Stop
             }
             KeyResult::Ignored => glib::Propagation::Proceed,
@@ -1224,7 +1222,7 @@ fn selection_summary(entries: &[FileEntry]) -> String {
 fn install_hint_css() {
     let provider = gtk::CssProvider::new();
     provider.load_from_string(
-        ".key-hint-overlay { background-color: alpha(@window_bg_color, 0.90); border-radius: 10px; padding: 10px 16px; box-shadow: 0 3px 12px alpha(black, 0.35); } .key-hint-key { font-family: monospace; font-weight: bold; color: @accent_color; }",
+        ".interaction-panel-content { background-color: @window_bg_color; border-top: 1px solid alpha(@window_fg_color, 0.16); padding: 10px 16px; } .key-hint-key { font-family: monospace; font-weight: bold; color: @accent_color; }",
     );
     if let Some(display) = gdk::Display::default() {
         gtk::style_context_add_provider_for_display(
