@@ -1094,6 +1094,104 @@ impl Browser {
         );
     }
 
+    fn open_with_apps(&self, entry: &FileEntry) -> Vec<gio::AppInfo> {
+        let Some(content_type) = entry.content_type.as_deref() else {
+            return Vec::new();
+        };
+        let history = self.settings.borrow();
+        let Some(ids) = history.open_with.get(content_type) else {
+            return Vec::new();
+        };
+        let installed = gio::AppInfo::all();
+        ids.iter()
+            .filter_map(|id| {
+                installed
+                    .iter()
+                    .find(|app| app.id().as_deref() == Some(id.as_str()))
+                    .cloned()
+            })
+            .collect()
+    }
+
+    fn launch_with(self: &Rc<Self>, entry: FileEntry, app: gio::AppInfo) {
+        let uri = entry.location.uri().to_owned();
+        let name = entry.display_name.clone();
+        let app_name = app.display_name().to_string();
+        let weak = Rc::downgrade(self);
+        app.launch_uris_async(
+            &[uri.as_str()],
+            None::<&gio::AppLaunchContext>,
+            None::<&gio::Cancellable>,
+            move |result| {
+                if let Some(browser) = weak.upgrade() {
+                    match result {
+                        Ok(()) => browser
+                            .status
+                            .set_label(&format!("NORMAL  Opened {name} with {app_name}")),
+                        Err(error) => {
+                            browser.status.set_label(&format!(
+                                "NORMAL  Could not open {name} with {app_name}: {error}"
+                            ));
+                            warn!(%error, file = name, application = app_name, "open-with launch failed");
+                        }
+                    }
+                }
+            },
+        );
+    }
+
+    fn remember_open_with(&self, content_type: &str, app: &gio::AppInfo) {
+        let Some(id) = app.id() else {
+            return;
+        };
+        let mut settings = self.settings.borrow_mut();
+        let history = settings
+            .open_with
+            .entry(content_type.to_owned())
+            .or_default();
+        if !history.iter().any(|existing| existing == id.as_str()) {
+            history.push(id.to_string());
+        }
+        if let Some(path) = self.settings_path.as_deref()
+            && let Err(error) = pathpilot_config::save_settings(path, &settings)
+        {
+            warn!(%error, "could not persist open-with history");
+        }
+    }
+
+    #[allow(deprecated)]
+    fn show_open_with_dialog(self: &Rc<Self>, window: &gtk::ApplicationWindow, entry: FileEntry) {
+        if entry.kind == FileKind::Directory {
+            self.status
+                .set_label("NORMAL  Open With is unavailable for directories");
+            return;
+        }
+        let Some(content_type) = entry.content_type.clone() else {
+            self.status
+                .set_label("NORMAL  The selected file has no known content type");
+            return;
+        };
+        let file = gio::File::for_uri(entry.location.uri());
+        let dialog = gtk::AppChooserDialog::new(
+            Some(window),
+            gtk::DialogFlags::MODAL | gtk::DialogFlags::DESTROY_WITH_PARENT,
+            &file,
+        );
+        dialog.set_heading(&format!("Open {} with", entry.display_name));
+        let weak = Rc::downgrade(self);
+        dialog.connect_response(move |dialog, response| {
+            if matches!(response, gtk::ResponseType::Ok | gtk::ResponseType::Accept)
+                && let Some(app) = dialog.app_info()
+                && let Some(browser) = weak.upgrade()
+            {
+                browser.remember_open_with(&content_type, &app);
+                browser.launch_with(entry.clone(), app);
+            }
+            dialog.close();
+        });
+        dialog.present();
+    }
+
     fn go_parent(self: &Rc<Self>) {
         let current = self.navigation.borrow().current().clone();
         let file = gio::File::for_uri(current.uri());
@@ -1398,6 +1496,7 @@ fn install_keyboard_controller(
     reference.retain(|(keys, _)| !keys.starts_with('g'));
     reference.extend([
         ("f".to_owned(), "Find by name"),
+        ("o …".to_owned(), "Open with application"),
         (":".to_owned(), "Command palette"),
         ("F1".to_owned(), "Hide hints"),
     ]);
@@ -1436,6 +1535,8 @@ fn install_keyboard_controller(
     let places = places.clone();
     let place_pending = Rc::new(Cell::new(false));
     let place_pending_for_keys = place_pending.clone();
+    let open_with_pending = Rc::new(RefCell::new(None::<(FileEntry, Vec<gio::AppInfo>)>));
+    let open_with_pending_for_keys = open_with_pending.clone();
     controller.connect_key_pressed(move |_, key, _, modifiers| {
         if let Some(browser) = browser.upgrade()
             && *browser.mode.borrow() == AppMode::Command
@@ -1498,6 +1599,7 @@ fn install_keyboard_controller(
 
         if key == gdk::Key::Escape {
             place_pending_for_keys.set(false);
+            open_with_pending_for_keys.borrow_mut().take();
             if browser
                 .upgrade()
                 .is_some_and(|browser| browser.leave_visual())
@@ -1575,6 +1677,22 @@ fn install_keyboard_controller(
         if !parser.borrow().is_pending()
             && let Some(character) = key.to_unicode()
         {
+            if let Some((entry, apps)) = open_with_pending_for_keys.borrow_mut().take() {
+                if let Some(browser) = browser.upgrade()
+                    && let Some(window) = weak_window.upgrade()
+                {
+                    if character == 'e' {
+                        browser.show_open_with_dialog(&window, entry);
+                    } else if let Some(index) = character.to_digit(10)
+                        && index > 0
+                        && let Some(app) = apps.get(index as usize - 1)
+                    {
+                        browser.launch_with(entry, app.clone());
+                    }
+                }
+                restore_hint_panel(&key_hints, hints_enabled.get(), &command_reference);
+                return glib::Propagation::Stop;
+            }
             if place_pending_for_keys.replace(false) {
                 if let Some(place) = places.iter().find(|place| place.key == character)
                     && let Some(browser) = browser.upgrade()
@@ -1601,6 +1719,40 @@ fn install_keyboard_controller(
                         .map(|place| (place.key.to_string(), place.label.as_str())),
                 );
                 key_hints.set_visible(true);
+                return glib::Propagation::Stop;
+            }
+            if character == 'o' {
+                parser.borrow_mut().reset();
+                if let Some(browser) = browser.upgrade() {
+                    let Some(entry) = browser.current.selected_entry() else {
+                        browser.status.set_label("NORMAL  Nothing selected");
+                        return glib::Propagation::Stop;
+                    };
+                    if entry.kind == FileKind::Directory {
+                        browser
+                            .status
+                            .set_label("NORMAL  Open With is unavailable for directories");
+                        return glib::Propagation::Stop;
+                    }
+                    let apps = browser.open_with_apps(&entry);
+                    let mut hints: Vec<_> = apps
+                        .iter()
+                        .take(9)
+                        .enumerate()
+                        .map(|(index, app)| {
+                            ((index + 1).to_string(), app.display_name().to_string())
+                        })
+                        .collect();
+                    hints.push(("e".to_owned(), "Choose another application…".to_owned()));
+                    populate_hint_grid(
+                        &key_hints,
+                        hints
+                            .iter()
+                            .map(|(key, label)| (key.clone(), label.as_str())),
+                    );
+                    key_hints.set_visible(true);
+                    *open_with_pending_for_keys.borrow_mut() = Some((entry, apps));
+                }
                 return glib::Propagation::Stop;
             }
             match character {

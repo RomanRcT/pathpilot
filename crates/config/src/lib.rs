@@ -74,6 +74,8 @@ pub struct Settings {
     pub ui: UiSettings,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub bookmarks: Vec<Bookmark>,
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub open_with: BTreeMap<String, Vec<String>>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -324,7 +326,22 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("config.toml");
         save_settings(&path, &Settings::default()).unwrap();
-        assert!(!fs::read_to_string(path).unwrap().contains("bookmarks"));
+        let source = fs::read_to_string(path).unwrap();
+        assert!(!source.contains("bookmarks"));
+        assert!(!source.contains("open_with"));
+    }
+
+    #[test]
+    fn open_with_history_round_trips_by_content_type() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        let mut settings = Settings::default();
+        settings.open_with.insert(
+            "text/plain".to_owned(),
+            vec!["org.gnome.TextEditor.desktop".to_owned()],
+        );
+        save_settings(&path, &settings).unwrap();
+        assert_eq!(load_settings(Some(&path)).0, settings);
     }
 
     #[test]
