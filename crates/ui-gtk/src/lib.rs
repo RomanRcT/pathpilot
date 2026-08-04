@@ -5,7 +5,9 @@ mod preview_pane;
 
 use std::{
     cell::{Cell, RefCell},
+    process::Command,
     rc::{Rc, Weak},
+    sync::mpsc,
     time::{Duration, Instant},
 };
 
@@ -29,7 +31,9 @@ struct Browser {
     current: DirectoryPane,
     preview: PreviewPane,
     location_label: gtk::Label,
+    status_bar: gtk::Box,
     status: gtk::Label,
+    git_status: gtk::Label,
     next_operation_id: Cell<u64>,
     find: RefCell<FilenameFind>,
     command_palette: RefCell<CommandPalette>,
@@ -41,10 +45,52 @@ struct Browser {
     input_help: gtk::Label,
     operation_clipboard: RefCell<Option<OperationClipboard>>,
     active_operation: RefCell<Option<OperationHandle>>,
+    git_summary: RefCell<Option<String>>,
+    git_probe: Cell<u64>,
 }
 
 impl Browser {
     fn new(initial: Location) -> Rc<Self> {
+        let status = gtk::Label::builder()
+            .label("NORMAL")
+            .xalign(0.0)
+            .hexpand(true)
+            .ellipsize(gtk::pango::EllipsizeMode::End)
+            .build();
+        let git_status = gtk::Label::builder().xalign(1.0).visible(false).build();
+        git_status.add_css_class("git-status");
+        let status_bar = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .spacing(16)
+            .build();
+        status_bar.add_css_class("status-line");
+        status_bar.add_css_class("status-normal");
+        status_bar.append(&status);
+        status_bar.append(&git_status);
+        let styled_status_bar = status_bar.clone();
+        status.connect_label_notify(move |label| {
+            for class in [
+                "status-normal",
+                "status-visual",
+                "status-find",
+                "status-command",
+                "status-input",
+            ] {
+                styled_status_bar.remove_css_class(class);
+            }
+            let class = if label.label().starts_with("VISUAL") {
+                "status-visual"
+            } else if label.label().starts_with("FIND") {
+                "status-find"
+            } else if label.label().starts_with("COMMAND") {
+                "status-command"
+            } else if label.label().starts_with("INPUT") {
+                "status-input"
+            } else {
+                "status-normal"
+            };
+            styled_status_bar.add_css_class(class);
+        });
         let input_title = gtk::Label::builder().xalign(1.0).width_chars(16).build();
         input_title.add_css_class("key-hint-key");
         let input_entry = gtk::Entry::builder()
@@ -80,14 +126,9 @@ impl Browser {
                 .margin_top(6)
                 .margin_bottom(6)
                 .build(),
-            status: gtk::Label::builder()
-                .label("NORMAL")
-                .xalign(0.0)
-                .margin_start(10)
-                .margin_end(10)
-                .margin_top(6)
-                .margin_bottom(6)
-                .build(),
+            status_bar,
+            status,
+            git_status,
             next_operation_id: Cell::new(1),
             find: RefCell::new(FilenameFind::default()),
             command_palette: RefCell::new(CommandPalette::default()),
@@ -99,6 +140,8 @@ impl Browser {
             input_help,
             operation_clipboard: RefCell::new(None),
             active_operation: RefCell::new(None),
+            git_summary: RefCell::new(None),
+            git_probe: Cell::new(0),
         })
     }
 
@@ -168,15 +211,22 @@ impl Browser {
             })
         };
         if let Some(count) = visual_count {
-            self.status.set_label(&format!(
-                "VISUAL  {count} selected · j/k extend · v/Escape finish"
-            ));
+            let metadata = self
+                .current
+                .selected_entry()
+                .map_or_else(String::new, |entry| {
+                    format!("  {}", compact_metadata(&entry))
+                });
+            self.status
+                .set_label(&format!("{:<8}{count:>3} selected{metadata}", "VISUAL"));
         } else {
             let clipboard = self.clipboard_status();
-            self.status.set_label(&format!(
-                "NORMAL  Selected: {} / {total}  h/j/k/l navigate · q quit{clipboard}",
-                selected + 1,
-            ));
+            let metadata = self.current.selected_entry().map_or_else(
+                || "No selection".to_owned(),
+                |entry| compact_metadata(&entry),
+            );
+            self.status
+                .set_label(&format!("{:<8}{metadata}{clipboard}", "NORMAL"));
         }
         self.update_preview();
     }
@@ -892,6 +942,7 @@ impl Browser {
         restored_position: Option<u32>,
     ) {
         let location = self.navigation.borrow().current().clone();
+        self.start_git_probe(&location);
         self.location_label.set_label(location.uri());
         self.status.set_label("NORMAL  Loading…");
 
@@ -929,6 +980,53 @@ impl Browser {
         }
         self.preview.show_empty();
         info!(location = location.uri(), "navigation started");
+    }
+
+    fn start_git_probe(self: &Rc<Self>, location: &Location) {
+        self.git_summary.borrow_mut().take();
+        self.git_status.set_visible(false);
+        let generation = self.git_probe.get().wrapping_add(1);
+        self.git_probe.set(generation);
+        let Some(path) = gio::File::for_uri(location.uri()).path() else {
+            return;
+        };
+        let (sender, receiver) = mpsc::channel();
+        std::thread::spawn(move || {
+            let output = Command::new("git")
+                .args(["-C"])
+                .arg(path)
+                .args(["status", "--porcelain=v1", "--branch"])
+                .output();
+            let summary = output
+                .ok()
+                .filter(|output| output.status.success())
+                .and_then(|output| parse_git_status(&String::from_utf8_lossy(&output.stdout)));
+            let _ = sender.send(summary);
+        });
+        let weak = Rc::downgrade(self);
+        glib::timeout_add_local(Duration::from_millis(25), move || {
+            match receiver.try_recv() {
+                Ok(summary) => {
+                    if let Some(browser) = weak.upgrade()
+                        && browser.git_probe.get() == generation
+                    {
+                        *browser.git_summary.borrow_mut() = summary;
+                        if let Some(summary) = browser.git_summary.borrow().as_deref() {
+                            browser.git_status.set_label(summary);
+                            browser.git_status.set_visible(true);
+                        } else {
+                            browser.git_status.set_visible(false);
+                        }
+                        if matches!(*browser.mode.borrow(), AppMode::Normal | AppMode::Visual(_)) {
+                            browser.selection_changed(browser.current.cursor_position());
+                        }
+                    }
+                    glib::ControlFlow::Break
+                }
+                Err(mpsc::TryRecvError::Empty) => glib::ControlFlow::Continue,
+                Err(mpsc::TryRecvError::Disconnected) => glib::ControlFlow::Break,
+            }
+        });
     }
 
     fn cancel(&self) {
@@ -972,7 +1070,7 @@ pub fn build_window(app: &gtk::Application) -> gtk::ApplicationWindow {
     interaction_panel.append(&browser.input_bar);
     root.append(&interaction_panel);
     root.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
-    root.append(&browser.status);
+    root.append(&browser.status_bar);
     install_hint_css();
     window.set_child(Some(&root));
 
@@ -1367,10 +1465,86 @@ fn selection_summary(entries: &[FileEntry]) -> String {
     names
 }
 
+fn compact_metadata(entry: &FileEntry) -> String {
+    let kind = match entry.kind {
+        FileKind::Directory => "Folder",
+        FileKind::Regular => entry.content_type.as_deref().unwrap_or("File"),
+        FileKind::Symlink => "Symlink",
+        FileKind::Special => "Special",
+        FileKind::Unknown => "Unknown",
+    };
+    let permissions = entry
+        .unix_mode
+        .map_or_else(|| "---------".to_owned(), format_permissions);
+    let size = if entry.kind == FileKind::Directory {
+        "—".to_owned()
+    } else {
+        entry.size.map_or_else(|| "—".to_owned(), compact_size)
+    };
+    let modified = if let Some(modified) = entry.modified
+        && let Ok(duration) = modified.duration_since(std::time::UNIX_EPOCH)
+        && let Ok(date) = glib::DateTime::from_unix_local(duration.as_secs() as i64)
+        && let Ok(value) = date.format("%Y-%m-%d %H:%M")
+    {
+        value.to_string()
+    } else {
+        "—".to_owned()
+    };
+    format!("{permissions:<9}  {modified:<16}  {size:>9}  {kind}")
+}
+
+fn parse_git_status(output: &str) -> Option<String> {
+    let mut lines = output.lines();
+    let branch = lines
+        .next()?
+        .strip_prefix("## ")?
+        .split("...")
+        .next()
+        .unwrap_or("HEAD");
+    let dirty = lines.next().is_some();
+    Some(format!(
+        " {branch}  {}",
+        if dirty { " modified" } else { " clean" }
+    ))
+}
+
+fn compact_size(bytes: u64) -> String {
+    const UNITS: [&str; 4] = ["B", "KiB", "MiB", "GiB"];
+    let mut value = bytes as f64;
+    let mut unit = 0;
+    while value >= 1024.0 && unit < UNITS.len() - 1 {
+        value /= 1024.0;
+        unit += 1;
+    }
+    if unit == 0 {
+        format!("{bytes} B")
+    } else {
+        format!("{value:.1} {}", UNITS[unit])
+    }
+}
+
+fn format_permissions(mode: u32) -> String {
+    let mut value = String::with_capacity(9);
+    for (mask, character) in [
+        (0o400, 'r'),
+        (0o200, 'w'),
+        (0o100, 'x'),
+        (0o040, 'r'),
+        (0o020, 'w'),
+        (0o010, 'x'),
+        (0o004, 'r'),
+        (0o002, 'w'),
+        (0o001, 'x'),
+    ] {
+        value.push(if mode & mask == 0 { '-' } else { character });
+    }
+    value
+}
+
 fn install_hint_css() {
     let provider = gtk::CssProvider::new();
     provider.load_from_string(
-        ".interaction-panel-content { background-color: @window_bg_color; border-top: 1px solid alpha(@window_fg_color, 0.16); padding: 10px 16px; } .key-hint-key { font-family: monospace; font-weight: bold; color: @accent_color; }",
+        ".interaction-panel-content { background-color: @window_bg_color; border-top: 1px solid alpha(@window_fg_color, 0.16); padding: 10px 16px; } .key-hint-key { font-family: monospace; font-weight: bold; color: @accent_color; } .status-line { padding: 7px 10px; font-family: 'Symbols Nerd Font Mono', 'JetBrainsMono Nerd Font', 'Noto Sans Mono', monospace; } .git-status { font-weight: bold; } .status-normal { background: #42566a; color: #f4f7fa; } .status-visual { background: #8a752e; color: #fff8dc; } .status-find { background: #376b5b; color: #f1fff9; } .status-command { background: #604c7a; color: #faf5ff; } .status-input { background: #496278; color: #f4f8ff; }",
     );
     if let Some(display) = gdk::Display::default() {
         gtk::style_context_add_provider_for_display(
@@ -1378,5 +1552,29 @@ fn install_hint_css() {
             &provider,
             gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_clean_and_dirty_git_status() {
+        assert_eq!(
+            parse_git_status("## main\n"),
+            Some(" main   clean".to_owned())
+        );
+        assert_eq!(
+            parse_git_status("## feature...origin/feature [ahead 1]\n M file\n"),
+            Some(" feature   modified".to_owned())
+        );
+        assert_eq!(parse_git_status("fatal"), None);
+    }
+
+    #[test]
+    fn formats_permissions_and_sizes_compactly() {
+        assert_eq!(format_permissions(0o100754), "rwxr-xr--");
+        assert_eq!(compact_size(1_536), "1.5 KiB");
     }
 }
