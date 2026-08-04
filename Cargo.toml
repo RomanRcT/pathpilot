@@ -19,6 +19,7 @@ rust-version = "1.85"
 gio = { version = "0.21", features = ["v2_72"] }
 gdk-pixbuf = "0.21"
 glib = "0.21"
+futures-util = "0.3"
 gtk = { package = "gtk4", version = "0.10", features = ["v4_12"] }
 pathpilot-core = { path = "crates/core" }
 pathpilot-fs-local = { path = "crates/fs-local" }

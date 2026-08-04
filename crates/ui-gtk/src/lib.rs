@@ -13,7 +13,7 @@ use directory_pane::DirectoryPane;
 use gtk::{gdk, gio, glib, prelude::*};
 use pathpilot_core::{
     AppCommand, COMMAND_REFERENCE, ClipboardAction, FileEntry, FileKind, FilenameFind, KeyResult,
-    KeySequenceParser, Location, NavigationState, OperationClipboard, OperationId, OperationKind,
+    KeySequenceParser, Location, NavigationState, OperationClipboard, OperationId,
 };
 use pathpilot_operations::{
     OperationHandle, OperationResult, copy_item_with_progress, create_directory, create_file,
@@ -90,11 +90,20 @@ impl Browser {
             self.preview.show_empty();
             return;
         }
+        let clipboard = self.clipboard_status();
         self.status.set_label(&format!(
-            "NORMAL  Selected: {} / {total}  h/j/k/l navigate · q quit",
-            selected + 1
+            "NORMAL  Selected: {} / {total}  h/j/k/l navigate · q quit{clipboard}",
+            selected + 1,
         ));
         self.update_preview();
+    }
+
+    fn clipboard_status(&self) -> String {
+        self.operation_clipboard
+            .borrow()
+            .as_ref()
+            .map(|clipboard| format!(" · {}", clipboard.status_label()))
+            .unwrap_or_default()
     }
 
     fn update_preview(self: &Rc<Self>) {
@@ -481,10 +490,16 @@ impl Browser {
         if is_active {
             self.active_operation.borrow_mut().take();
         }
-        let completed_move = matches!(result.kind, OperationKind::Move { .. });
+        let clear_clipboard = self
+            .operation_clipboard
+            .borrow()
+            .as_ref()
+            .is_some_and(|clipboard| {
+                clipboard.should_clear_after(&result.kind, result.result.is_ok())
+            });
         match result.result {
             Ok(()) => {
-                if completed_move {
+                if clear_clipboard {
                     self.operation_clipboard.borrow_mut().take();
                 }
                 self.status.set_label("NORMAL  Operation completed");

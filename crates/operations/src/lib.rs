@@ -1,8 +1,11 @@
 //! Safe, cancelable GIO primitives for mutating local filesystem operations.
 
+use futures_util::StreamExt;
 use gio::prelude::*;
 use std::{
+    cell::Cell,
     collections::VecDeque,
+    rc::Rc,
     sync::mpsc::{self, TryRecvError},
     time::Duration,
 };
@@ -199,17 +202,35 @@ pub fn copy_item_with_progress(
     if invalid_transfer_destination(source, destination) {
         return finish_invalid_destination(id, kind, on_finished);
     }
-    let source_uri = source.uri().to_owned();
-    let destination_uri = destination.uri().to_owned();
+    let source_file = gio::File::for_uri(source.uri());
+    let destination_file = gio::File::for_uri(destination.uri());
     let resulting_location = destination.clone();
-    run_background_tree_operation(
-        id,
-        kind,
-        Some(resulting_location),
-        on_progress,
-        on_finished,
-        move |cancellable, sender| copy_tree(&source_uri, &destination_uri, &cancellable, &sender),
-    )
+    let cancellable = gio::Cancellable::new();
+    let operation_cancellable = cancellable.clone();
+    let created_root_directory = Rc::new(Cell::new(false));
+    let operation_created_root = created_root_directory.clone();
+    glib::MainContext::ref_thread_default().spawn_local(async move {
+        let operation = copy_tree_async(
+            &source_file,
+            &destination_file,
+            on_progress,
+            operation_created_root,
+        );
+        let result = match gio::CancellableFuture::new(operation, operation_cancellable).await {
+            Ok(result) => result,
+            Err(_) => {
+                if created_root_directory.get() {
+                    let _ = remove_tree_async(&destination_file).await;
+                }
+                Err(glib::Error::new(
+                    gio::IOErrorEnum::Cancelled,
+                    "The copy operation was cancelled",
+                ))
+            }
+        };
+        publish(id, kind, Some(resulting_location), result, on_finished);
+    });
+    OperationHandle { id, cancellable }
 }
 
 pub fn move_item(
@@ -325,21 +346,30 @@ struct CopyEntry {
     size: u64,
 }
 
-fn copy_tree(
-    source_uri: &str,
-    destination_uri: &str,
-    cancellable: &gio::Cancellable,
-    sender: &mpsc::Sender<BackgroundEvent>,
+async fn copy_tree_async(
+    source: &gio::File,
+    destination: &gio::File,
+    on_progress: impl Fn(OperationProgress),
+    created_root_directory: Rc<Cell<bool>>,
 ) -> Result<(), glib::Error> {
-    let source = gio::File::for_uri(source_uri);
-    let destination = gio::File::for_uri(destination_uri);
-    if destination.query_exists(Some(cancellable)) {
-        return Err(glib::Error::new(
-            gio::IOErrorEnum::Exists,
-            "The destination already exists",
-        ));
+    match destination
+        .query_info_future(
+            "standard::type",
+            gio::FileQueryInfoFlags::NOFOLLOW_SYMLINKS,
+            glib::Priority::DEFAULT,
+        )
+        .await
+    {
+        Ok(_) => {
+            return Err(glib::Error::new(
+                gio::IOErrorEnum::Exists,
+                "The destination already exists",
+            ));
+        }
+        Err(error) if error.matches(gio::IOErrorEnum::NotFound) => {}
+        Err(error) => return Err(error),
     }
-    let entries = collect_copy_entries(&source, &destination, cancellable)?;
+    let entries = collect_copy_entries_async(source, destination).await?;
     let total_items = entries.len() as u64;
     let total_bytes = entries.iter().map(|entry| entry.size).sum();
     let mut progress = OperationProgress {
@@ -351,52 +381,60 @@ fn copy_tree(
     for (index, entry) in entries.into_iter().enumerate() {
         let completed_before = progress.completed_bytes;
         let result = if entry.file_type == gio::FileType::Directory {
-            entry.destination.make_directory(Some(cancellable))
+            entry
+                .destination
+                .make_directory_future(glib::Priority::DEFAULT)
+                .await
         } else {
-            entry.source.copy(
+            let (copy, mut updates) = entry.source.copy_future(
                 &entry.destination,
                 gio::FileCopyFlags::NOFOLLOW_SYMLINKS | gio::FileCopyFlags::ALL_METADATA,
-                Some(cancellable),
-                Some(&mut |current, _| {
+                glib::Priority::DEFAULT,
+            );
+            let report_progress = async {
+                while let Some((current, _)) = updates.next().await {
                     progress.completed_bytes = completed_before + current.max(0) as u64;
-                    let _ = sender.send(BackgroundEvent::Progress(progress));
-                }),
-            )
+                    on_progress(progress);
+                }
+            };
+            let (result, ()) = futures_util::future::join(copy, report_progress).await;
+            result
         };
         if let Err(error) = result {
-            let safe_to_clean = destination_created
-                || (!error.matches(gio::IOErrorEnum::Exists)
-                    && destination.query_exists(None::<&gio::Cancellable>));
-            if safe_to_clean {
-                let _ = remove_tree(&destination, None, None);
+            if destination_created {
+                let _ = remove_tree_async(destination).await;
             }
             return Err(error);
         }
         if index == 0 {
             destination_created = true;
+            if entry.file_type == gio::FileType::Directory {
+                created_root_directory.set(true);
+            }
         }
         progress.completed_items += 1;
         if entry.file_type != gio::FileType::Directory {
             progress.completed_bytes = completed_before.saturating_add(entry.size);
         }
-        let _ = sender.send(BackgroundEvent::Progress(progress));
+        on_progress(progress);
     }
     Ok(())
 }
 
-fn collect_copy_entries(
+async fn collect_copy_entries_async(
     source: &gio::File,
     destination: &gio::File,
-    cancellable: &gio::Cancellable,
 ) -> Result<Vec<CopyEntry>, glib::Error> {
     let mut pending = VecDeque::from([(source.clone(), destination.clone())]);
     let mut entries = Vec::new();
     while let Some((source, destination)) = pending.pop_front() {
-        let info = source.query_info(
-            "standard::type,standard::size",
-            gio::FileQueryInfoFlags::NOFOLLOW_SYMLINKS,
-            Some(cancellable),
-        )?;
+        let info = source
+            .query_info_future(
+                "standard::type,standard::size",
+                gio::FileQueryInfoFlags::NOFOLLOW_SYMLINKS,
+                glib::Priority::DEFAULT,
+            )
+            .await?;
         let file_type = info.file_type();
         entries.push(CopyEntry {
             source: source.clone(),
@@ -409,19 +447,67 @@ fn collect_copy_entries(
             },
         });
         if file_type == gio::FileType::Directory {
-            let enumerator = source.enumerate_children(
-                "standard::name",
-                gio::FileQueryInfoFlags::NOFOLLOW_SYMLINKS,
-                Some(cancellable),
-            )?;
-            while let Some(child_info) = enumerator.next_file(Some(cancellable))? {
-                let name = child_info.name();
-                pending.push_back((source.child(&name), destination.child(&name)));
+            let enumerator = source
+                .enumerate_children_future(
+                    "standard::name",
+                    gio::FileQueryInfoFlags::NOFOLLOW_SYMLINKS,
+                    glib::Priority::DEFAULT,
+                )
+                .await?;
+            loop {
+                let children = enumerator
+                    .next_files_future(256, glib::Priority::DEFAULT)
+                    .await?;
+                if children.is_empty() {
+                    break;
+                }
+                for child_info in children {
+                    let name = child_info.name();
+                    pending.push_back((source.child(&name), destination.child(&name)));
+                }
             }
         }
     }
     entries.sort_by_key(|entry| entry.destination.uri().matches('/').count());
     Ok(entries)
+}
+
+async fn remove_tree_async(target: &gio::File) -> Result<(), glib::Error> {
+    let mut pending = VecDeque::from([target.clone()]);
+    let mut entries = Vec::new();
+    while let Some(entry) = pending.pop_front() {
+        let info = entry
+            .query_info_future(
+                "standard::type",
+                gio::FileQueryInfoFlags::NOFOLLOW_SYMLINKS,
+                glib::Priority::DEFAULT,
+            )
+            .await?;
+        if info.file_type() == gio::FileType::Directory {
+            let enumerator = entry
+                .enumerate_children_future(
+                    "standard::name",
+                    gio::FileQueryInfoFlags::NOFOLLOW_SYMLINKS,
+                    glib::Priority::DEFAULT,
+                )
+                .await?;
+            loop {
+                let children = enumerator
+                    .next_files_future(256, glib::Priority::DEFAULT)
+                    .await?;
+                if children.is_empty() {
+                    break;
+                }
+                pending.extend(children.into_iter().map(|info| entry.child(info.name())));
+            }
+        }
+        entries.push(entry);
+    }
+    entries.sort_by_key(|entry| std::cmp::Reverse(entry.uri().matches('/').count()));
+    for entry in entries {
+        entry.delete_future(glib::Priority::DEFAULT).await?;
+    }
+    Ok(())
 }
 
 fn delete_tree(
@@ -699,6 +785,27 @@ mod tests {
         assert!(result.result.is_ok());
         assert!(!directory_path.exists());
         assert!(moved_path.join("child.txt").exists());
+
+        let move_source_path = temporary.path().join("move-source.txt");
+        let move_destination_path = temporary.path().join("move-destination.txt");
+        fs::write(&move_source_path, b"move payload").expect("write move source");
+        let move_source = Location::new(gio::File::for_path(&move_source_path).uri());
+        let move_destination = Location::new(gio::File::for_path(&move_destination_path).uri());
+        let result = run_operation(|callback| {
+            move_item(
+                OperationId::new(11),
+                &move_source,
+                &move_destination,
+                |_, _| {},
+                callback,
+            )
+        });
+        assert!(result.result.is_ok());
+        assert!(!move_source_path.exists());
+        assert_eq!(
+            fs::read(move_destination_path).expect("read moved file"),
+            b"move payload"
+        );
     }
 
     #[test]
@@ -750,6 +857,96 @@ mod tests {
 
         assert!(result.result.is_ok());
         assert!(!target_path.exists());
+    }
+
+    #[test]
+    fn cancelling_copy_reports_cancelled_and_leaves_no_destination() {
+        let _guard = gio_test_lock();
+        let temporary = tempfile::tempdir().expect("create temporary directory");
+        let source_path = temporary.path().join("source.txt");
+        let destination_path = temporary.path().join("destination.txt");
+        fs::write(&source_path, vec![42_u8; 1024 * 1024]).expect("write source");
+        let source = Location::new(gio::File::for_path(source_path).uri());
+        let destination = Location::new(gio::File::for_path(&destination_path).uri());
+        let result = Rc::new(RefCell::new(None));
+        let main_loop = glib::MainLoop::new(None, false);
+        let handle = copy_item(OperationId::new(12), &source, &destination, |_, _| {}, {
+            let result = result.clone();
+            let main_loop = main_loop.clone();
+            move |value| {
+                *result.borrow_mut() = Some(value);
+                main_loop.quit();
+            }
+        });
+        handle.cancel();
+        main_loop.run();
+        let result = result.borrow_mut().take().expect("copy completes");
+
+        assert_eq!(
+            result.result.expect_err("copy is cancelled").kind,
+            OperationErrorKind::Cancelled
+        );
+        assert!(!destination_path.exists());
+    }
+
+    #[test]
+    fn cancelling_before_preflight_never_removes_an_existing_destination() {
+        let _guard = gio_test_lock();
+        let temporary = tempfile::tempdir().expect("create temporary directory");
+        let source_path = temporary.path().join("source.txt");
+        let destination_path = temporary.path().join("destination.txt");
+        fs::write(&source_path, b"source").expect("write source");
+        fs::write(&destination_path, b"existing").expect("write destination");
+        let source = Location::new(gio::File::for_path(source_path).uri());
+        let destination = Location::new(gio::File::for_path(&destination_path).uri());
+        let result = Rc::new(RefCell::new(None));
+        let main_loop = glib::MainLoop::new(None, false);
+        let handle = copy_item(OperationId::new(13), &source, &destination, |_, _| {}, {
+            let result = result.clone();
+            let main_loop = main_loop.clone();
+            move |value| {
+                *result.borrow_mut() = Some(value);
+                main_loop.quit();
+            }
+        });
+        handle.cancel();
+        main_loop.run();
+
+        assert_eq!(
+            result
+                .borrow_mut()
+                .take()
+                .expect("copy completes")
+                .result
+                .expect_err("copy is cancelled")
+                .kind,
+            OperationErrorKind::Cancelled
+        );
+        assert_eq!(
+            fs::read(destination_path).expect("read destination"),
+            b"existing"
+        );
+    }
+
+    #[test]
+    fn classifies_structured_gio_errors() {
+        for (gio_kind, expected) in [
+            (gio::IOErrorEnum::Exists, OperationErrorKind::AlreadyExists),
+            (
+                gio::IOErrorEnum::PermissionDenied,
+                OperationErrorKind::PermissionDenied,
+            ),
+            (gio::IOErrorEnum::NotFound, OperationErrorKind::NotFound),
+            (gio::IOErrorEnum::Cancelled, OperationErrorKind::Cancelled),
+            (
+                gio::IOErrorEnum::NotSupported,
+                OperationErrorKind::Unsupported,
+            ),
+            (gio::IOErrorEnum::Failed, OperationErrorKind::Other),
+        ] {
+            let error = glib::Error::new(gio_kind, "fixture");
+            assert_eq!(classify_error(error).kind, expected);
+        }
     }
 
     #[test]

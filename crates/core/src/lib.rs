@@ -160,6 +160,22 @@ pub struct OperationClipboard {
     pub display_name: String,
 }
 
+impl OperationClipboard {
+    pub fn should_clear_after(&self, kind: &OperationKind, succeeded: bool) -> bool {
+        succeeded
+            && self.action == ClipboardAction::Move
+            && matches!(kind, OperationKind::Move { source, .. } if source == &self.source)
+    }
+
+    pub fn status_label(&self) -> String {
+        let action = match self.action {
+            ClipboardAction::Copy => "COPY",
+            ClipboardAction::Move => "CUT",
+        };
+        format!("{action}: {}", self.display_name)
+    }
+}
+
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct FilenameFind {
     active: bool,
@@ -705,5 +721,35 @@ mod tests {
                 KeyResult::Command(command)
             );
         }
+    }
+
+    #[test]
+    fn clipboard_is_retained_after_copy_and_cleared_only_after_successful_move() {
+        let source = Location::new("file:///tmp/source.txt");
+        let destination = Location::new("file:///tmp/destination.txt");
+        let copy_clipboard = OperationClipboard {
+            action: ClipboardAction::Copy,
+            source: source.clone(),
+            display_name: "source.txt".to_owned(),
+        };
+        let copy = OperationKind::Copy {
+            source: source.clone(),
+            destination: destination.clone(),
+        };
+        assert!(!copy_clipboard.should_clear_after(&copy, true));
+        assert_eq!(copy_clipboard.status_label(), "COPY: source.txt");
+
+        let move_clipboard = OperationClipboard {
+            action: ClipboardAction::Move,
+            source: source.clone(),
+            display_name: "source.txt".to_owned(),
+        };
+        let moving = OperationKind::Move {
+            source,
+            destination,
+        };
+        assert!(!move_clipboard.should_clear_after(&moving, false));
+        assert!(move_clipboard.should_clear_after(&moving, true));
+        assert_eq!(move_clipboard.status_label(), "CUT: source.txt");
     }
 }

@@ -37,7 +37,7 @@ Every operation has an `OperationId`, typed `OperationKind`, state, progress fie
 
 The `/` binding remains reserved for a future directory-filtering mode.
 
-Copy and move run outside the GTK main thread, expose byte progress in the status line, reject recursive destinations, and never silently overwrite an existing destination. Directory copy performs a cancellable preflight, creates directories in parent-first order, copies metadata without following symbolic links, and removes the newly created partial destination after failure or cancellation. A copied item remains in the operation clipboard for repeated pastes; a moved item is cleared only after success. `Escape` cancels an active transfer and the operation remains active until its completion callback arrives.
+Copy and move use asynchronous GIO operations, expose item and byte progress in the status line, reject recursive destinations, and never silently overwrite an existing destination. Directory copy performs an asynchronous cancellable preflight, enumerates children in batches, creates directories in parent-first order, copies metadata without following symbolic links, and asynchronously removes the newly created partial destination after failure or cancellation. A copied item remains in the operation clipboard for repeated pastes; a moved item is cleared only after success. The status line keeps the current `COPY` or `CUT` clipboard visible. `Escape` cancels an active transfer and the operation remains active until its completion callback arrives.
 
 When a paste destination exists, the UI asks whether to cancel or keep both items. “Keep Both” chooses the first available numbered name, preserving the existing item. A race that creates the same destination after the prompt is still reported as a conflict rather than overwritten.
 
@@ -45,7 +45,7 @@ When a paste destination exists, the UI asks whether to cancel or keep both item
 
 ## Verification
 
-Temporary-filesystem integration tests create and rename a file, verify that conflicts do not overwrite existing data, recursively copy nested directories, permanently delete a non-empty tree, and reject path traversal and recursive transfer destinations.
+Temporary-filesystem integration tests create and rename a file, verify that conflicts do not overwrite existing data, recursively copy nested directories, move files and directories, cancel a copy without leaving a destination, permanently delete a non-empty tree, classify structured GIO errors, and reject path traversal and recursive transfer destinations. Core tests verify copy-clipboard retention and successful move-clipboard clearing.
 
 ## Next slice
 

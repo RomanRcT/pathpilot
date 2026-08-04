@@ -8,6 +8,7 @@ rust-version.workspace = true
 [dependencies]
 gio.workspace = true
 glib.workspace = true
+futures-util.workspace = true
 pathpilot-core.workspace = true
 tracing.workspace = true
 
