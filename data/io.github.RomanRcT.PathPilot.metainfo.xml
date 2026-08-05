@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>io.github.RomanRcT.PathPilot</id>
+  <name>PathPilot</name>
+  <summary>Keyboard-first graphical file manager</summary>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>GPL-3.0-or-later</project_license>
+  <developer id="io.github.romanrct">
+    <name>RomanRcT</name>
+  </developer>
+  <description>
+    <p>
+      PathPilot combines three-column navigation, Vim-inspired commands,
+      responsive previews, safe file operations, desktop integration, and an
+      embedded Neovim editor in a GTK 4 application.
+    </p>
+  </description>
+  <launchable type="desktop-id">io.github.RomanRcT.PathPilot.desktop</launchable>
+  <url type="homepage">https://github.com/RomanRcT/pathpilot</url>
+  <url type="bugtracker">https://github.com/RomanRcT/pathpilot/issues</url>
+  <provides>
+    <binary>pathpilot</binary>
+  </provides>
+  <requires>
+    <display_length compare="ge">768</display_length>
+  </requires>
+  <content_rating type="oars-1.1" />
+  <releases>
+    <release version="0.1.0" date="2026-08-04">
+      <description>
+        <p>First public preview with local navigation, previews, file operations, Open With, bookmarks, and embedded Neovim editing.</p>
+      </description>
+    </release>
+  </releases>
+</component>

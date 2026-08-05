@@ -1,0 +1,131 @@
+name: Release packages
+
+on:
+  push:
+    tags: ['v*']
+  pull_request:
+    paths:
+      - '.github/workflows/release-packages.yml'
+      - 'packaging/**'
+      - 'Makefile'
+      - 'data/io.github.RomanRcT.PathPilot.desktop'
+      - 'data/io.github.RomanRcT.PathPilot.metainfo.xml'
+      - 'data/icons/**'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing GitHub release tag to receive the packages
+        required: true
+        default: v0.1.0
+
+permissions:
+  contents: write
+
+env:
+  RELEASE_TAG: ${{ github.event_name == 'pull_request' && 'v0.1.0' || (github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name) }}
+
+jobs:
+  rpm:
+    name: Fedora RPM
+    runs-on: ubuntu-24.04
+    container: fedora:44
+    steps:
+      - name: Install build dependencies
+        run: >-
+          dnf install --assumeyes
+          appstream cargo desktop-file-utils gcc git make rpm-build rust
+          gtk4-devel vte291-gtk4-devel
+
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Build RPM packages
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${RELEASE_TAG#v}"
+          mkdir -p "$HOME/rpmbuild/SOURCES" release-assets
+          tar --exclude=.git --exclude=target \
+            --transform="s,^,pathpilot-${version}/," \
+            -czf "$HOME/rpmbuild/SOURCES/pathpilot-${version}.tar.gz" .
+          rpmbuild -ba packaging/rpm/pathpilot.spec
+          cp "$HOME"/rpmbuild/RPMS/x86_64/pathpilot-${version}-*.x86_64.rpm release-assets/
+          cp "$HOME"/rpmbuild/SRPMS/pathpilot-${version}-*.src.rpm release-assets/
+
+      - name: Upload RPM artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: rpm-packages
+          path: release-assets/*
+          if-no-files-found: error
+
+  flatpak:
+    name: Flatpak bundle
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Install Flatpak tooling
+        run: sudo apt-get update && sudo apt-get install --yes flatpak flatpak-builder
+
+      - name: Add Flathub and install SDKs
+        run: |
+          flatpak remote-add --user --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo
+          flatpak install --user --noninteractive flathub \
+            org.gnome.Platform//50 org.gnome.Sdk//50 \
+            org.freedesktop.Sdk.Extension.rust-stable//25.08
+
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Vendor Rust dependencies
+        run: |
+          cargo vendor vendor
+          mkdir -p .cargo
+          cp packaging/flatpak/cargo-config.toml .cargo/config.toml
+
+      - name: Build Flatpak bundle
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${RELEASE_TAG#v}"
+          flatpak-builder --user --force-clean --repo=flatpak-repo \
+            build-flatpak packaging/flatpak/io.github.RomanRcT.PathPilot.yml
+          flatpak build-bundle flatpak-repo \
+            "PathPilot-${version}-x86_64.flatpak" \
+            io.github.RomanRcT.PathPilot stable \
+            --runtime-repo=https://dl.flathub.org/repo/flathub.flatpakrepo
+
+      - name: Upload Flatpak artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: flatpak-bundle
+          path: PathPilot-*.flatpak
+          if-no-files-found: error
+
+  publish:
+    name: Attach packages to release
+    if: github.event_name != 'pull_request'
+    needs: [rpm, flatpak]
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Download packages
+        uses: actions/download-artifact@v4
+        with:
+          path: release-assets
+          merge-multiple: true
+
+      - name: Create checksums
+        working-directory: release-assets
+        run: sha256sum -- * > SHA256SUMS
+
+      - name: Create release when needed
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >-
+          gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 ||
+          gh release create "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY"
+          --title "PathPilot $RELEASE_TAG" --prerelease --generate-notes
+
+      - name: Upload release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "$RELEASE_TAG" release-assets/* --clobber --repo "$GITHUB_REPOSITORY"

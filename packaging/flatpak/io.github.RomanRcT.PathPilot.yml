@@ -1,0 +1,31 @@
+id: io.github.RomanRcT.PathPilot
+runtime: org.gnome.Platform
+runtime-version: '50'
+sdk: org.gnome.Sdk
+sdk-extensions:
+  - org.freedesktop.Sdk.Extension.rust-stable
+command: pathpilot
+branch: stable
+
+finish-args:
+  - --share=ipc
+  - --socket=wayland
+  - --socket=fallback-x11
+  - --device=dri
+  - --filesystem=host
+  - --talk-name=org.freedesktop.Flatpak
+
+build-options:
+  append-path: /usr/lib/sdk/rust-stable/bin
+  env:
+    CARGO_HOME: /run/build/pathpilot/cargo
+
+modules:
+  - name: pathpilot
+    buildsystem: simple
+    build-commands:
+      - cargo build --release --locked --offline
+      - make install PREFIX=/app
+    sources:
+      - type: dir
+        path: ../..

@@ -1163,12 +1163,24 @@ impl Browser {
             .map(|value| value.to_string_lossy().into_owned())
             .collect();
         let environment_refs: Vec<_> = environment.iter().map(String::as_str).collect();
+        let editor_command = if std::path::Path::new("/.flatpak-info").exists() {
+            vec![
+                "flatpak-spawn".to_owned(),
+                "--host".to_owned(),
+                "nvim".to_owned(),
+                "--".to_owned(),
+                path_text.clone(),
+            ]
+        } else {
+            vec!["nvim".to_owned(), "--".to_owned(), path_text.clone()]
+        };
+        let editor_args: Vec<_> = editor_command.iter().map(String::as_str).collect();
         let weak = Rc::downgrade(self);
         let callback_path = path_text.clone();
         self.preview.terminal().spawn_async(
             vte::PtyFlags::DEFAULT,
             working_directory.as_deref(),
-            &["nvim", "--", path_text.as_str()],
+            &editor_args,
             &environment_refs,
             glib::SpawnFlags::SEARCH_PATH,
             || {},
@@ -1470,7 +1482,7 @@ pub fn build_window(app: &gtk::Application) -> gtk::ApplicationWindow {
 
     let window = gtk::ApplicationWindow::builder()
         .application(app)
-        .title("PathPilot — Preview Prototype")
+        .title("PathPilot")
         .default_width(window_width)
         .default_height(window_height)
         .build();
