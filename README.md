@@ -89,6 +89,27 @@ The next major steps are:
 
 Detailed phases, performance targets, and exit criteria are maintained in [`pathpilot_project_plan.md`](pathpilot_project_plan.md).
 
+## Install release packages
+
+Download release assets from the GitHub Releases page. On Fedora, install the
+RPM with dependency resolution:
+
+```bash
+sudo dnf install ./pathpilot-0.1.0-1.fc44.x86_64.rpm
+```
+
+Install the single-file Flatpak bundle with:
+
+```bash
+flatpak install --user ./PathPilot-0.1.0-x86_64.flatpak
+flatpak run io.github.RomanRcT.PathPilot
+```
+
+The Flatpak has host-filesystem access because PathPilot is a file manager. Its
+embedded editor uses `flatpak-spawn --host nvim`, so Neovim and the user's
+normal configuration remain on the host. The manifest therefore also grants
+access to the Flatpak portal service.
+
 ## Fedora development setup
 
 Install the native dependencies:

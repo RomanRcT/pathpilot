@@ -2,7 +2,7 @@ use gtk::{gio, prelude::*};
 use tracing::{info, info_span};
 use tracing_subscriber::EnvFilter;
 
-const APP_ID: &str = "io.github.pathpilot.PathPilot";
+const APP_ID: &str = "io.github.RomanRcT.PathPilot";
 
 fn main() -> gtk::glib::ExitCode {
     init_tracing();

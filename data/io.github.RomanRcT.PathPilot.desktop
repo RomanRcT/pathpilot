@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=PathPilot
+Comment=Keyboard-first graphical file manager
+Exec=pathpilot
+Icon=io.github.RomanRcT.PathPilot
+Terminal=false
+Categories=System;FileTools;FileManager;GTK;
+Keywords=files;folders;preview;vim;neovim;
+StartupNotify=true
+StartupWMClass=io.github.RomanRcT.PathPilot
