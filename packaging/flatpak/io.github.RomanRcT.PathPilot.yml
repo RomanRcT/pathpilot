@@ -21,6 +21,22 @@ build-options:
     CARGO_HOME: /run/build/pathpilot/cargo
 
 modules:
+  - name: vte
+    buildsystem: meson
+    config-opts:
+      - -Dapp=false
+      - -Ddocs=false
+      - -Dgir=false
+      - -Dglade=false
+      - -Dgtk3=false
+      - -Dgtk4=true
+      - -Dvapi=false
+      - -D_systemd=false
+    sources:
+      - type: archive
+        url: https://download.gnome.org/sources/vte/0.84/vte-0.84.0.tar.xz
+        sha256: 0414e31583836aeb7878da25f67c515f7e8879917ecc37c92e26b83e8d8fc3e3
+
   - name: pathpilot
     buildsystem: simple
     build-commands:
