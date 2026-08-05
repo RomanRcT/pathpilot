@@ -24,6 +24,7 @@ modules:
   - name: vte
     buildsystem: meson
     config-opts:
+      - -Dlibdir=lib
       - -Dapp=false
       - -Ddocs=false
       - -Dgir=false
