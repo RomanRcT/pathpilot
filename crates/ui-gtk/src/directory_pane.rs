@@ -34,6 +34,7 @@ pub struct DirectoryPane {
     changing_selection: Rc<Cell<bool>>,
     independent_selection: Rc<Cell<bool>>,
     show_hidden: Rc<Cell<bool>>,
+    visible_rows: Rc<RefCell<Vec<(u32, gtk::Box)>>>,
 }
 
 impl DirectoryPane {
@@ -60,6 +61,7 @@ impl DirectoryPane {
         let visual_anchor = Rc::new(Cell::new(None::<u32>));
         let changing_selection = Rc::new(Cell::new(false));
         let independent_selection = Rc::new(Cell::new(false));
+        let visible_rows = Rc::new(RefCell::new(Vec::new()));
         selection.connect_selection_changed({
             let cursor = cursor.clone();
             let visual_anchor = visual_anchor.clone();
@@ -91,9 +93,34 @@ impl DirectoryPane {
                 .expect("factory setup receives ListItem")
                 .set_child(Some(&create_row()));
         });
-        factory.connect_bind(|_, item| bind_row(item));
+        {
+            let visible_rows = visible_rows.clone();
+            factory.connect_bind(move |_, item| bind_row(item, &visible_rows));
+        }
+        {
+            let visible_rows = visible_rows.clone();
+            factory.connect_unbind(move |_, item| {
+                if let Some(row) = item
+                    .downcast_ref::<gtk::ListItem>()
+                    .and_then(|item| item.child())
+                    .and_downcast::<gtk::Box>()
+                {
+                    visible_rows
+                        .borrow_mut()
+                        .retain(|(_, existing)| existing != &row);
+                }
+            });
+        }
 
         let list = gtk::ListView::new(Some(selection.clone()), Some(factory));
+        {
+            let visible_rows = visible_rows.clone();
+            let selection = selection.clone();
+            let cursor = cursor.clone();
+            selection.clone().connect_selection_changed(move |_, _, _| {
+                refresh_row_states(&visible_rows, &selection, cursor.get());
+            });
+        }
         list.set_single_click_activate(false);
         list.set_vexpand(true);
         let scroller = gtk::ScrolledWindow::builder()
@@ -142,6 +169,7 @@ impl DirectoryPane {
             changing_selection,
             independent_selection,
             show_hidden: Rc::new(Cell::new(false)),
+            visible_rows,
         }
     }
 
@@ -305,34 +333,37 @@ impl DirectoryPane {
             self.apply_selection();
             self.list
                 .scroll_to(position, gtk::ListScrollFlags::FOCUS, None);
+            self.refresh_row_states();
         }
     }
 
-    pub fn toggle_selection_and_advance(&self) {
-        let count = self.selection.n_items();
-        if count == 0 {
+    pub fn toggle_selection(&self) {
+        if self.selection.n_items() == 0 {
             return;
         }
         let current = self.cursor_position();
         self.independent_selection.set(true);
         self.changing_selection.set(true);
-        self.selection.select_item(current, false);
-        let next = current.saturating_add(1).min(count - 1);
-        self.cursor.set(next);
-        self.selection.select_item(next, false);
+        if self.selection.is_selected(current) {
+            self.selection.unselect_item(current);
+        } else {
+            self.selection.select_item(current, false);
+        }
         self.changing_selection.set(false);
-        self.list.scroll_to(next, gtk::ListScrollFlags::FOCUS, None);
+        self.refresh_row_states();
     }
 
     pub fn begin_visual(&self) {
         self.independent_selection.set(false);
         self.visual_anchor.set(Some(self.cursor_position()));
         self.apply_selection();
+        self.refresh_row_states();
     }
 
     pub fn end_visual(&self) {
         self.visual_anchor.set(None);
         self.apply_selection();
+        self.refresh_row_states();
     }
 
     fn apply_selection(&self) {
@@ -350,6 +381,11 @@ impl DirectoryPane {
                 .select_item(cursor, !self.independent_selection.get());
         }
         self.changing_selection.set(false);
+        self.refresh_row_states();
+    }
+
+    fn refresh_row_states(&self) {
+        refresh_row_states(&self.visible_rows, &self.selection, self.cursor_position());
     }
 
     pub fn select_location(&self, location: &Location) -> bool {
@@ -404,7 +440,7 @@ fn metadata_label(width: i32) -> gtk::Label {
     label
 }
 
-fn bind_row(item: &glib::Object) {
+fn bind_row(item: &glib::Object, visible_rows: &Rc<RefCell<Vec<(u32, gtk::Box)>>>) {
     let item = item
         .downcast_ref::<gtk::ListItem>()
         .expect("factory bind receives ListItem");
@@ -417,6 +453,12 @@ fn bind_row(item: &glib::Object) {
         .child()
         .and_downcast::<gtk::Box>()
         .expect("factory child is a Box");
+    let position = item.position();
+    {
+        let mut rows = visible_rows.borrow_mut();
+        rows.retain(|(_, existing)| existing != &row);
+        rows.push((position, row.clone()));
+    }
     let icon = row
         .first_child()
         .and_downcast::<gtk::Image>()
@@ -443,6 +485,28 @@ fn bind_row(item: &glib::Object) {
         entry.location.uri(),
         format_modified(entry.modified)
     )));
+}
+
+fn refresh_row_states(
+    visible_rows: &Rc<RefCell<Vec<(u32, gtk::Box)>>>,
+    selection: &gtk::MultiSelection,
+    cursor: u32,
+) {
+    for (position, row) in visible_rows.borrow().iter() {
+        if *position == gtk::INVALID_LIST_POSITION {
+            continue;
+        }
+        if selection.is_selected(*position) {
+            row.add_css_class("independent-selected");
+        } else {
+            row.remove_css_class("independent-selected");
+        }
+        if *position == cursor {
+            row.add_css_class("cursor-item");
+        } else {
+            row.remove_css_class("cursor-item");
+        }
+    }
 }
 
 fn next_label(widget: &impl IsA<gtk::Widget>) -> gtk::Label {

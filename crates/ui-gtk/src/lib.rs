@@ -1993,7 +1993,7 @@ fn install_keyboard_controller(
     reference.extend([
         ("e".to_owned(), "Edit in Neovim"),
         ("f".to_owned(), "Find by name"),
-        ("Space".to_owned(), "Toggle selection and advance"),
+        ("Space".to_owned(), "Toggle selection"),
         ("s …".to_owned(), "Change sorting"),
         (".".to_owned(), "Toggle hidden items"),
         ("o t".to_owned(), "Toggle terminal"),
@@ -2283,7 +2283,7 @@ fn install_keyboard_controller(
                             .status
                             .set_label("VISUAL  Use v/Escape to finish the range first");
                     } else {
-                        browser.current.toggle_selection_and_advance();
+                        browser.current.toggle_selection();
                         browser.selection_changed(browser.current.cursor_position());
                     }
                 }
@@ -2619,7 +2619,7 @@ fn format_permissions(mode: u32) -> String {
 fn install_hint_css() {
     let provider = gtk::CssProvider::new();
     provider.load_from_string(
-        ".interaction-panel-content { background-color: @window_bg_color; border-top: 1px solid alpha(@window_fg_color, 0.16); padding: 10px 16px; } .key-hint-key { font-family: monospace; font-weight: bold; color: @accent_color; } .status-line { padding: 7px 10px; font-family: 'Symbols Nerd Font Mono', 'JetBrainsMono Nerd Font', 'Noto Sans Mono', monospace; } .git-status { font-weight: bold; } .status-normal { background: #42566a; color: #f4f7fa; } .status-visual { background: #8a752e; color: #fff8dc; } .status-find { background: #376b5b; color: #f1fff9; } .status-command { background: #604c7a; color: #faf5ff; } .status-input { background: #496278; color: #f4f8ff; } .status-edit { background: #654c3d; color: #fff7ed; }",
+        ".interaction-panel-content { background-color: @window_bg_color; border-top: 1px solid alpha(@window_fg_color, 0.16); padding: 10px 16px; } .key-hint-key { font-family: monospace; font-weight: bold; color: @accent_color; } .status-line { padding: 7px 10px; font-family: 'Symbols Nerd Font Mono', 'JetBrainsMono Nerd Font', 'Noto Sans Mono', monospace; } .git-status { font-weight: bold; } .status-normal { background: #42566a; color: #f4f7fa; } .status-visual { background: #8a752e; color: #fff8dc; } .status-find { background: #376b5b; color: #f1fff9; } .status-command { background: #604c7a; color: #faf5ff; } .status-input { background: #496278; color: #f4f8ff; } .status-edit { background: #654c3d; color: #fff7ed; } .independent-selected { background-color: alpha(@accent_bg_color, 0.28); } .cursor-item { outline: 2px solid @accent_color; outline-offset: -2px; } .cursor-item.independent-selected { background-color: alpha(@accent_bg_color, 0.48); }",
     );
     if let Some(display) = gdk::Display::default() {
         gtk::style_context_add_provider_for_display(
