@@ -28,6 +28,7 @@ pub struct DirectoryPane {
     cursor: Rc<Cell<u32>>,
     visual_anchor: Rc<Cell<Option<u32>>>,
     changing_selection: Rc<Cell<bool>>,
+    show_hidden: Rc<Cell<bool>>,
 }
 
 impl DirectoryPane {
@@ -127,7 +128,12 @@ impl DirectoryPane {
             cursor,
             visual_anchor,
             changing_selection,
+            show_hidden: Rc::new(Cell::new(false)),
         }
+    }
+
+    pub fn set_show_hidden(&self, show_hidden: bool) {
+        self.show_hidden.set(show_hidden);
     }
 
     pub fn load(&self, location: &Location, on_finished: impl Fn(bool) + 'static) {
@@ -178,8 +184,11 @@ impl DirectoryPane {
 
                     match event {
                         DirectoryEvent::Batch { entries, .. } => {
-                            let objects: Vec<_> =
-                                entries.into_iter().map(glib::BoxedAnyObject::new).collect();
+                            let objects: Vec<_> = entries
+                                .into_iter()
+                                .filter(|entry| pane.show_hidden.get() || !entry.is_hidden)
+                                .map(glib::BoxedAnyObject::new)
+                                .collect();
                             pane.store.extend_from_slice(&objects);
                             pane.status
                                 .set_label(&format!("Loading… {} entries", pane.store.n_items()));

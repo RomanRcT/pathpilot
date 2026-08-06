@@ -17,6 +17,7 @@ license = "GPL-3.0-or-later"
 rust-version = "1.85"
 
 [workspace.dependencies]
+adw = { package = "libadwaita", version = "0.8", features = ["v1_5"] }
 gio = { version = "0.21", features = ["v2_72"] }
 gdk-pixbuf = "0.21"
 glib = "0.21"

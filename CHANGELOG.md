@@ -2,6 +2,25 @@
 
 All notable changes to PathPilot are documented in this file.
 
+## [Unreleased]
+
+### Added
+
+- Native embedded shell terminal opened with `o t`, starting in the active directory and synchronizing shell directory changes back to the browser.
+- Header-bar controls for hidden items and the terminal, plus a keyboard hidden-item toggle on `.`.
+- Persistent `preview_line_numbers` and `color_scheme` UI settings.
+- Theme-aware source and Markdown previews with optional line numbers.
+
+### Changed
+
+- Migrated the application shell, window, header bar, and About dialog to libadwaita.
+- Preview syntax colors now follow the effective light or dark appearance.
+
+### Fixed
+
+- Terminal focus now bypasses PathPilot's modal key handler and remains in VTE while shell directory changes update the browser.
+- Application appearance now follows GNOME's modern color-scheme preference instead of the legacy GTK theme name.
+
 ## [0.1.0] - 2026-08-04
 
 First preview release.
@@ -30,3 +49,4 @@ First preview release.
 - This is a preview release and configuration formats may evolve before a stable release.
 
 [0.1.0]: https://github.com/RomanRcT/pathpilot/releases/tag/v0.1.0
+[Unreleased]: https://github.com/RomanRcT/pathpilot/compare/v0.1.0...HEAD

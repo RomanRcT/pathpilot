@@ -11,8 +11,9 @@ use std::{
     time::{Duration, Instant},
 };
 
+use adw::prelude::*;
 use directory_pane::DirectoryPane;
-use gtk::{gdk, gio, glib, prelude::*};
+use gtk::{gdk, gio, glib};
 use pathpilot_core::{
     AppCommand, AppMode, ClipboardAction, ClipboardItem, CommandPalette, FileEntry, FileKind,
     FilenameFind, InputModeKind, KeyResult, KeySequenceParser, Location, NavigationState,
@@ -85,6 +86,12 @@ struct Browser {
     focus_right_position: Cell<i32>,
     editing: Cell<bool>,
     editor_previous_layout: Cell<PaneLayout>,
+    terminal: vte::Terminal,
+    terminal_panel: gtk::Box,
+    terminal_visible: Cell<bool>,
+    terminal_running: Cell<bool>,
+    terminal_button: RefCell<Option<gtk::ToggleButton>>,
+    hidden_button: RefCell<Option<gtk::ToggleButton>>,
     settings: Rc<RefCell<pathpilot_config::Settings>>,
     settings_path: Option<std::path::PathBuf>,
 }
@@ -161,11 +168,29 @@ impl Browser {
         input_bar.append(&input_entry);
         input_bar.append(&input_help);
         let ui = settings.borrow().ui.clone();
+        let terminal = vte::Terminal::new();
+        terminal.set_hexpand(true);
+        terminal.set_vexpand(true);
+        terminal.set_scrollback_lines(10_000);
+        let terminal_panel = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        let terminal_title = gtk::Label::builder()
+            .label("Terminal")
+            .xalign(0.0)
+            .margin_start(8)
+            .margin_end(8)
+            .margin_top(6)
+            .margin_bottom(6)
+            .build();
+        terminal_title.add_css_class("heading");
+        terminal_panel.append(&terminal_title);
+        terminal_panel.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
+        terminal_panel.append(&terminal);
+        terminal_panel.set_visible(false);
         Rc::new(Self {
             navigation: RefCell::new(NavigationState::new(initial)),
             parent: DirectoryPane::new("Parent"),
             current: DirectoryPane::new("Current"),
-            preview: PreviewPane::new(),
+            preview: PreviewPane::new(ui.preview_line_numbers),
             location_label: gtk::Label::builder()
                 .xalign(0.0)
                 .ellipsize(gtk::pango::EllipsizeMode::Middle)
@@ -201,6 +226,12 @@ impl Browser {
             focus_right_position: Cell::new(ui.focus_right_position),
             editing: Cell::new(false),
             editor_previous_layout: Cell::new(PaneLayout::Browse),
+            terminal,
+            terminal_panel,
+            terminal_visible: Cell::new(false),
+            terminal_running: Cell::new(false),
+            terminal_button: RefCell::new(None),
+            hidden_button: RefCell::new(None),
             settings,
             settings_path,
         })
@@ -251,6 +282,117 @@ impl Browser {
                 browser.refresh_input_bar();
             }
         });
+
+        let weak = Rc::downgrade(self);
+        self.terminal.connect_child_exited(move |_, _| {
+            if let Some(browser) = weak.upgrade() {
+                browser.terminal_running.set(false);
+                browser.hide_terminal();
+            }
+        });
+        let weak = Rc::downgrade(self);
+        self.terminal
+            .connect_current_directory_uri_notify(move |terminal| {
+                let Some(browser) = weak.upgrade() else {
+                    return;
+                };
+                let Some(uri) = terminal.current_directory_uri() else {
+                    return;
+                };
+                let location = Location::new(uri.to_string());
+                if browser.navigation.borrow().current() != &location {
+                    browser.navigate_to(location, None);
+                    let terminal = terminal.clone();
+                    glib::idle_add_local_once(move || {
+                        terminal.grab_focus();
+                    });
+                }
+            });
+    }
+
+    fn set_show_hidden(self: &Rc<Self>, show_hidden: bool) {
+        self.parent.set_show_hidden(show_hidden);
+        self.current.set_show_hidden(show_hidden);
+        self.preview.set_show_hidden(show_hidden);
+        self.settings.borrow_mut().ui.show_hidden = show_hidden;
+        if let Some(button) = self.hidden_button.borrow().as_ref() {
+            button.set_active(show_hidden);
+        }
+        self.reload_columns(None, None);
+        self.status.set_label(if show_hidden {
+            "NORMAL  Hidden items shown"
+        } else {
+            "NORMAL  Hidden items hidden"
+        });
+    }
+
+    fn toggle_terminal(self: &Rc<Self>) {
+        if self.terminal_visible.get() {
+            self.hide_terminal();
+            return;
+        }
+        self.terminal_visible.set(true);
+        self.terminal_panel.set_visible(true);
+        if let Some(button) = self.terminal_button.borrow().as_ref() {
+            button.set_active(true);
+        }
+        if self.terminal_running.get() {
+            self.terminal.grab_focus();
+            return;
+        }
+        self.start_terminal();
+    }
+
+    fn hide_terminal(&self) {
+        self.terminal_visible.set(false);
+        self.terminal_panel.set_visible(false);
+        if let Some(button) = self.terminal_button.borrow().as_ref() {
+            button.set_active(false);
+        }
+        self.current.list.grab_focus();
+    }
+
+    fn start_terminal(self: &Rc<Self>) {
+        let location = self.navigation.borrow().current().clone();
+        let Some(directory) = gio::File::for_uri(location.uri()).path() else {
+            self.status
+                .set_label("NORMAL  Terminal is available for local directories only");
+            self.hide_terminal();
+            return;
+        };
+        let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_owned());
+        let arguments = [shell.as_str()];
+        let environment = glib::environ();
+        let environment: Vec<_> = environment
+            .iter()
+            .map(|value| value.to_string_lossy().into_owned())
+            .collect();
+        let environment_refs: Vec<_> = environment.iter().map(String::as_str).collect();
+        self.terminal.reset(true, true);
+        self.terminal_running.set(true);
+        self.terminal.grab_focus();
+        let weak = Rc::downgrade(self);
+        self.terminal.spawn_async(
+            vte::PtyFlags::DEFAULT,
+            directory.to_str(),
+            &arguments,
+            &environment_refs,
+            glib::SpawnFlags::SEARCH_PATH,
+            || {},
+            -1,
+            None::<&gio::Cancellable>,
+            move |result| {
+                if let Err(error) = result
+                    && let Some(browser) = weak.upgrade()
+                {
+                    browser.terminal_running.set(false);
+                    browser.hide_terminal();
+                    browser
+                        .status
+                        .set_label(&format!("NORMAL  Could not start terminal: {error}"));
+                }
+            },
+        );
     }
 
     fn initial_load(self: &Rc<Self>) {
@@ -308,7 +450,7 @@ impl Browser {
         self.preview.schedule(entry);
     }
 
-    fn dispatch(self: &Rc<Self>, command: AppCommand, window: &gtk::ApplicationWindow) -> bool {
+    fn dispatch(self: &Rc<Self>, command: AppCommand, window: &adw::ApplicationWindow) -> bool {
         if command == AppCommand::Quit {
             return true;
         }
@@ -440,7 +582,7 @@ impl Browser {
         }
     }
 
-    fn persist_window_state(&self, window: &gtk::ApplicationWindow) {
+    fn persist_window_state(&self, window: &adw::ApplicationWindow) {
         if let Some((outer, right)) = self.layout_panes.borrow().as_ref() {
             match self.pane_layout.get() {
                 PaneLayout::Browse => {
@@ -523,7 +665,7 @@ impl Browser {
         self.leave_visual();
     }
 
-    fn copy_selection_text(self: &Rc<Self>, window: &gtk::ApplicationWindow, kind: ClipboardText) {
+    fn copy_selection_text(self: &Rc<Self>, window: &adw::ApplicationWindow, kind: ClipboardText) {
         let entries = self.operation_entries();
         if entries.is_empty() {
             self.status.set_label("NORMAL  Nothing selected");
@@ -551,7 +693,7 @@ impl Browser {
         self.leave_visual();
     }
 
-    fn paste_operation_clipboard(self: &Rc<Self>, window: &gtk::ApplicationWindow) {
+    fn paste_operation_clipboard(self: &Rc<Self>, window: &adw::ApplicationWindow) {
         if self.active_operation.borrow().is_some() {
             self.status
                 .set_label("NORMAL  Another file operation is already running");
@@ -590,7 +732,7 @@ impl Browser {
     #[allow(deprecated)]
     fn confirm_keep_both(
         self: &Rc<Self>,
-        window: &gtk::ApplicationWindow,
+        window: &adw::ApplicationWindow,
         clipboard: OperationClipboard,
         parent: gio::File,
         conflicts: usize,
@@ -745,7 +887,7 @@ impl Browser {
             .current
             .widget
             .root()
-            .and_downcast::<gtk::ApplicationWindow>()
+            .and_downcast::<adw::ApplicationWindow>()
             && self.dispatch(command, &window)
         {
             window.close();
@@ -855,8 +997,11 @@ impl Browser {
     }
 
     fn hide_input_bar(&self) {
+        let was_visible = self.input_bar.is_visible();
         self.input_bar.set_visible(false);
-        self.current.list.grab_focus();
+        if was_visible {
+            self.current.list.grab_focus();
+        }
     }
 
     fn cancel_text_input(&self) {
@@ -905,7 +1050,7 @@ impl Browser {
     }
 
     #[allow(deprecated)]
-    fn confirm_trash(self: &Rc<Self>, window: &gtk::ApplicationWindow) {
+    fn confirm_trash(self: &Rc<Self>, window: &adw::ApplicationWindow) {
         if self.active_operation.borrow().is_some() {
             self.status
                 .set_label("NORMAL  Another file operation is already running");
@@ -958,7 +1103,7 @@ impl Browser {
     }
 
     #[allow(deprecated)]
-    fn confirm_permanent_delete(self: &Rc<Self>, window: &gtk::ApplicationWindow) {
+    fn confirm_permanent_delete(self: &Rc<Self>, window: &adw::ApplicationWindow) {
         if self.active_operation.borrow().is_some() {
             self.status
                 .set_label("NORMAL  Another file operation is already running");
@@ -1285,7 +1430,7 @@ impl Browser {
     }
 
     #[allow(deprecated)]
-    fn show_open_with_dialog(self: &Rc<Self>, window: &gtk::ApplicationWindow, entry: FileEntry) {
+    fn show_open_with_dialog(self: &Rc<Self>, window: &adw::ApplicationWindow, entry: FileEntry) {
         if entry.kind == FileKind::Directory {
             self.status
                 .set_label("NORMAL  Open With is unavailable for directories");
@@ -1449,7 +1594,7 @@ impl Browser {
     }
 }
 
-pub fn build_window(app: &gtk::Application) -> gtk::ApplicationWindow {
+pub fn build_window(app: &adw::Application) -> adw::ApplicationWindow {
     let startup_span = info_span!("build_window");
     let _guard = startup_span.enter();
     let settings_path = pathpilot_config::settings_path();
@@ -1476,11 +1621,27 @@ pub fn build_window(app: &gtk::Application) -> gtk::ApplicationWindow {
     let window_width = settings.ui.window_width;
     let window_height = settings.ui.window_height;
     let window_maximized = settings.ui.window_maximized;
+    adw::StyleManager::default().set_color_scheme(match settings.ui.color_scheme.as_str() {
+        "light" => adw::ColorScheme::ForceLight,
+        "dark" => adw::ColorScheme::ForceDark,
+        "system" => adw::ColorScheme::Default,
+        value => {
+            warn!(
+                color_scheme = value,
+                "unknown color scheme; following system preference"
+            );
+            adw::ColorScheme::Default
+        }
+    });
     let settings = Rc::new(RefCell::new(settings));
     let browser = Browser::new(initial, settings, settings_path);
+    let show_hidden = browser.settings.borrow().ui.show_hidden;
+    browser.parent.set_show_hidden(show_hidden);
+    browser.current.set_show_hidden(show_hidden);
+    browser.preview.set_show_hidden(show_hidden);
     browser.connect_editor_exit();
 
-    let window = gtk::ApplicationWindow::builder()
+    let window = adw::ApplicationWindow::builder()
         .application(app)
         .title("PathPilot")
         .default_width(window_width)
@@ -1489,11 +1650,59 @@ pub fn build_window(app: &gtk::Application) -> gtk::ApplicationWindow {
     if window_maximized {
         window.maximize();
     }
+    let header = adw::HeaderBar::new();
+    let hidden_button = gtk::ToggleButton::builder()
+        .icon_name("view-reveal-symbolic")
+        .tooltip_text("Show hidden items")
+        .active(show_hidden)
+        .build();
+    *browser.hidden_button.borrow_mut() = Some(hidden_button.clone());
+    let terminal_button = gtk::ToggleButton::builder()
+        .icon_name("utilities-terminal-symbolic")
+        .tooltip_text("Show terminal (o t)")
+        .build();
+    *browser.terminal_button.borrow_mut() = Some(terminal_button.clone());
+    let menu = gio::Menu::new();
+    menu.append(Some("About PathPilot"), Some("app.about"));
+    let menu_button = gtk::MenuButton::builder()
+        .icon_name("open-menu-symbolic")
+        .tooltip_text("Main menu")
+        .menu_model(&menu)
+        .build();
+    header.pack_start(&hidden_button);
+    header.pack_start(&terminal_button);
+    header.pack_end(&menu_button);
+    header.set_title_widget(Some(&browser.location_label));
+
+    if app.lookup_action("about").is_none() {
+        let about = gio::SimpleAction::new("about", None);
+        let weak_window = window.downgrade();
+        about.connect_activate(move |_, _| {
+            let dialog = adw::AboutDialog::builder()
+                .application_name("PathPilot")
+                .application_icon("io.github.RomanRcT.PathPilot")
+                .version(env!("CARGO_PKG_VERSION"))
+                .comments("Keyboard-first local file manager")
+                .website("https://github.com/RomanRcT/pathpilot")
+                .license_type(gtk::License::Gpl30)
+                .build();
+            if let Some(window) = weak_window.upgrade() {
+                dialog.present(Some(&window));
+            }
+        });
+        app.add_action(&about);
+    }
+
     let columns = three_column_layout(&browser);
+    let content = gtk::Paned::new(gtk::Orientation::Vertical);
+    content.set_start_child(Some(&columns));
+    content.set_end_child(Some(&browser.terminal_panel));
+    content.set_resize_start_child(true);
+    content.set_resize_end_child(true);
+    content.set_shrink_start_child(false);
+    content.set_position((window_height * 2 / 3).max(300));
     let root = gtk::Box::new(gtk::Orientation::Vertical, 0);
-    root.append(&browser.location_label);
-    root.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
-    root.append(&columns);
+    root.append(&content);
     let interaction_panel = gtk::Box::builder()
         .orientation(gtk::Orientation::Vertical)
         .visible(true)
@@ -1512,7 +1721,32 @@ pub fn build_window(app: &gtk::Application) -> gtk::ApplicationWindow {
     root.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
     root.append(&browser.status_bar);
     install_hint_css();
-    window.set_child(Some(&root));
+    let toolbar_view = adw::ToolbarView::new();
+    toolbar_view.add_top_bar(&header);
+    toolbar_view.set_content(Some(&root));
+    window.set_content(Some(&toolbar_view));
+
+    let weak = Rc::downgrade(&browser);
+    hidden_button.connect_toggled(move |button| {
+        if let Some(browser) = weak.upgrade() {
+            browser.set_show_hidden(button.is_active());
+        }
+    });
+    let weak = Rc::downgrade(&browser);
+    let terminal_button_for_exit = terminal_button.clone();
+    terminal_button.connect_toggled(move |button| {
+        if let Some(browser) = weak.upgrade()
+            && button.is_active() != browser.terminal_visible.get()
+        {
+            browser.toggle_terminal();
+        }
+    });
+    let weak = Rc::downgrade(&browser);
+    browser.terminal.connect_child_exited(move |_, _| {
+        if weak.upgrade().is_some() {
+            terminal_button_for_exit.set_active(false);
+        }
+    });
 
     browser.connect();
     install_keyboard_controller(&window, Rc::downgrade(&browser), &key_hints);
@@ -1599,7 +1833,7 @@ fn default_places(bookmarks: &[pathpilot_config::Bookmark]) -> Vec<PlaceBinding>
 }
 
 fn install_keyboard_controller(
-    window: &gtk::ApplicationWindow,
+    window: &adw::ApplicationWindow,
     browser: Weak<Browser>,
     key_hints: &gtk::Grid,
 ) {
@@ -1623,6 +1857,8 @@ fn install_keyboard_controller(
     reference.extend([
         ("e".to_owned(), "Edit in Neovim"),
         ("f".to_owned(), "Find by name"),
+        (".".to_owned(), "Toggle hidden items"),
+        ("o t".to_owned(), "Toggle terminal"),
         ("o …".to_owned(), "Open with application"),
         (":".to_owned(), "Command palette"),
         ("F1".to_owned(), "Hide hints"),
@@ -1662,9 +1898,15 @@ fn install_keyboard_controller(
     let places = places.clone();
     let place_pending = Rc::new(Cell::new(false));
     let place_pending_for_keys = place_pending.clone();
-    let open_with_pending = Rc::new(RefCell::new(None::<(FileEntry, Vec<gio::AppInfo>)>));
+    let open_with_pending = Rc::new(RefCell::new(None::<(Option<FileEntry>, Vec<gio::AppInfo>)>));
     let open_with_pending_for_keys = open_with_pending.clone();
     controller.connect_key_pressed(move |_, key, _, modifiers| {
+        if browser
+            .upgrade()
+            .is_some_and(|browser| browser.terminal.has_focus())
+        {
+            return glib::Propagation::Proceed;
+        }
         if browser
             .upgrade()
             .is_some_and(|browser| browser.editing.get())
@@ -1814,11 +2056,16 @@ fn install_keyboard_controller(
                 if let Some(browser) = browser.upgrade()
                     && let Some(window) = weak_window.upgrade()
                 {
-                    if character == 'e' {
+                    if character == 't' {
+                        browser.toggle_terminal();
+                    } else if character == 'e'
+                        && let Some(entry) = entry
+                    {
                         browser.show_open_with_dialog(&window, entry);
                     } else if let Some(index) = character.to_digit(10)
                         && index > 0
                         && let Some(app) = apps.get(index as usize - 1)
+                        && let Some(entry) = entry
                     {
                         browser.launch_with(entry, app.clone());
                     }
@@ -1857,17 +2104,13 @@ fn install_keyboard_controller(
             if character == 'o' {
                 parser.borrow_mut().reset();
                 if let Some(browser) = browser.upgrade() {
-                    let Some(entry) = browser.current.selected_entry() else {
-                        browser.status.set_label("NORMAL  Nothing selected");
-                        return glib::Propagation::Stop;
-                    };
-                    if entry.kind == FileKind::Directory {
-                        browser
-                            .status
-                            .set_label("NORMAL  Open With is unavailable for directories");
-                        return glib::Propagation::Stop;
-                    }
-                    let apps = browser.open_with_apps(&entry);
+                    let entry = browser
+                        .current
+                        .selected_entry()
+                        .filter(|entry| entry.kind != FileKind::Directory);
+                    let apps = entry
+                        .as_ref()
+                        .map_or_else(Vec::new, |entry| browser.open_with_apps(entry));
                     let mut hints: Vec<_> = apps
                         .iter()
                         .take(9)
@@ -1876,7 +2119,10 @@ fn install_keyboard_controller(
                             ((index + 1).to_string(), app.display_name().to_string())
                         })
                         .collect();
-                    hints.push(("e".to_owned(), "Choose another application…".to_owned()));
+                    if entry.is_some() {
+                        hints.push(("e".to_owned(), "Choose another application…".to_owned()));
+                    }
+                    hints.push(("t".to_owned(), "Toggle terminal".to_owned()));
                     populate_hint_grid(
                         &key_hints,
                         hints
@@ -1893,6 +2139,15 @@ fn install_keyboard_controller(
                 if let Some(browser) = browser.upgrade() {
                     browser.start_embedded_editor();
                 }
+                return glib::Propagation::Stop;
+            }
+            if character == '.' {
+                parser.borrow_mut().reset();
+                if let Some(browser) = browser.upgrade() {
+                    let show_hidden = !browser.settings.borrow().ui.show_hidden;
+                    browser.set_show_hidden(show_hidden);
+                }
+                restore_hint_panel(&key_hints, hints_enabled.get(), &command_reference);
                 return glib::Propagation::Stop;
             }
             match character {

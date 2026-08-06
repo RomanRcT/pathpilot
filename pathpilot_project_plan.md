@@ -5,9 +5,19 @@
 **Working title:** `PathPilot`  
 **Primary platform:** Fedora Linux / Wayland  
 **Primary language:** Rust  
-**UI toolkit:** GTK 4 via `gtk4-rs`  
+**UI toolkit:** GTK 4 and libadwaita via `gtk-rs`
 **Desktop integration:** GIO / GLib / FreeDesktop specifications  
-**Initial license recommendation:** GPL-3.0-or-later or MPL-2.0
+**License:** GPL-3.0-or-later
+
+### Current implementation status (2026-08-06)
+
+The v0.1.x codebase has completed the navigation, preview, file-operation, and
+input foundations described below. It also includes packaged RPM/Flatpak
+artifacts, libadwaita integration, configurable light/dark appearance,
+show/hide hidden files, theme-aware previews with line numbers, embedded
+Neovim, and an embedded shell terminal synchronized with browser navigation.
+Tabs, general filtering, drag-and-drop, remote GIO workflows, and richer
+document previews remain planned work.
 
 ---
 
@@ -153,7 +163,6 @@ Keyboard focus must remain predictable after mouse interactions.
 - Full filesystem indexing.
 - Content search across the entire disk.
 - Plugin API.
-- Embedded terminal.
 - Archive modification.
 - Git status overlays.
 - PDF preview.
@@ -175,7 +184,7 @@ These features may be added after the local filesystem experience is stable and 
 - **Rust stable**
 - **GTK 4** through `gtk4-rs`
 - **GLib/GIO** for filesystem abstractions and desktop integration
-- **libadwaita** only where it improves consistency without forcing a GNOME-specific layout
+- **libadwaita** for the application shell, system appearance, and standard GNOME dialogs
 - **Tokio** only for non-GIO asynchronous work that benefits from its runtime
 - **GLib main context** for GTK-safe task completion and UI updates
 - **Serde + TOML** for configuration

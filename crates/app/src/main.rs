@@ -1,4 +1,4 @@
-use gtk::{gio, prelude::*};
+use adw::{gio, prelude::*};
 use tracing::{info, info_span};
 use tracing_subscriber::EnvFilter;
 
@@ -9,7 +9,7 @@ fn main() -> gtk::glib::ExitCode {
     let startup = info_span!("application_startup");
     let _guard = startup.enter();
 
-    let app = gtk::Application::builder()
+    let app = adw::Application::builder()
         .application_id(APP_ID)
         .flags(gio::ApplicationFlags::empty())
         .build();
