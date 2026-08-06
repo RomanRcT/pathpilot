@@ -186,6 +186,7 @@ pub fn load_preview(
     entry: &FileEntry,
     generation: Generation,
     limits: PreviewLimits,
+    dark: bool,
     on_result: impl Fn(PreviewResult) + 'static,
 ) -> gio::Cancellable {
     let cancellable = gio::Cancellable::new();
@@ -203,7 +204,7 @@ pub fn load_preview(
     } else if content_type.starts_with("image/") {
         load_image(entry, generation, limits, &cancellable, on_result);
     } else if is_text_content_type(content_type) {
-        load_text(entry, generation, limits, &cancellable, on_result);
+        load_text(entry, generation, limits, dark, &cancellable, on_result);
     } else {
         on_result(PreviewResult {
             generation,
@@ -218,6 +219,7 @@ fn load_text(
     entry: &FileEntry,
     generation: Generation,
     limits: PreviewLimits,
+    dark: bool,
     cancellable: &gio::Cancellable,
     on_result: Rc<dyn Fn(PreviewResult)>,
 ) {
@@ -251,6 +253,7 @@ fn load_text(
                                 truncated,
                                 display_name,
                                 generation,
+                                dark,
                                 &highlight_cancellable,
                                 on_result,
                             );
@@ -380,6 +383,7 @@ fn highlight_async(
     truncated: bool,
     display_name: String,
     generation: Generation,
+    dark: bool,
     cancellable: &gio::Cancellable,
     on_result: Rc<dyn Fn(PreviewResult)>,
 ) {
@@ -389,7 +393,7 @@ fn highlight_async(
         let result = if is_markdown_name(&display_name) {
             render_markdown(text, truncated, &worker_cancellable).map(ProcessedText::Markdown)
         } else {
-            highlight_text(text, truncated, &display_name, &worker_cancellable)
+            highlight_text(text, truncated, &display_name, dark, &worker_cancellable)
                 .map(ProcessedText::Styled)
         };
         let _ = sender.send(result);
@@ -429,6 +433,7 @@ fn highlight_text(
     text: String,
     truncated: bool,
     display_name: &str,
+    dark: bool,
     cancellable: &gio::Cancellable,
 ) -> Result<StyledTextPreview, String> {
     use syntect::{
@@ -448,11 +453,17 @@ fn highlight_text(
         .flatten()
         .or_else(|| syntax_set.find_syntax_by_first_line(&text))
         .unwrap_or_else(|| syntax_set.find_syntax_plain_text());
-    let theme = &theme_set.themes["base16-ocean.dark"];
+    let theme = &theme_set.themes[if dark {
+        "base16-ocean.dark"
+    } else {
+        "InspiredGitHub"
+    }];
     let background = theme
         .settings
         .background
-        .map_or((43, 48, 59), |color| (color.r, color.g, color.b));
+        .map_or(if dark { (43, 48, 59) } else { (255, 255, 255) }, |color| {
+            (color.r, color.g, color.b)
+        });
     let mut highlighter = HighlightLines::new(syntax, theme);
     let mut spans = Vec::new();
     let mut char_offset = 0_i32;
@@ -651,7 +662,7 @@ mod tests {
         };
         let generation = GenerationTracker::default().advance();
         let result = Rc::new(RefCell::new(None));
-        let _cancellable = load_preview(&entry, generation, PreviewLimits::default(), {
+        let _cancellable = load_preview(&entry, generation, PreviewLimits::default(), false, {
             let result = result.clone();
             move |preview| *result.borrow_mut() = Some(preview)
         });
@@ -690,6 +701,7 @@ mod tests {
                 max_text_bytes: 4,
                 ..PreviewLimits::default()
             },
+            false,
             {
                 let result = result.clone();
                 let main_loop = main_loop.clone();
@@ -717,6 +729,7 @@ mod tests {
             "name: pathpilot\nenabled: true\n".to_owned(),
             false,
             "config.yaml",
+            false,
             &cancellable,
         )
         .expect("highlight succeeds");

@@ -48,11 +48,12 @@ pub struct PreviewPane {
     metadata: gtk::Label,
     text: gtk::TextView,
     picture: gtk::Picture,
+    show_line_numbers: bool,
     state: Rc<PreviewState>,
 }
 
 impl PreviewPane {
-    pub fn new() -> Self {
+    pub fn new(show_line_numbers: bool) -> Self {
         let directory = DirectoryPane::new("Directory preview");
         let metadata = gtk::Label::builder()
             .wrap(true)
@@ -130,12 +131,17 @@ impl PreviewPane {
             metadata,
             text,
             picture,
+            show_line_numbers,
             state: Rc::new(PreviewState::default()),
         }
     }
 
     pub fn terminal(&self) -> vte::Terminal {
         self.terminal.clone()
+    }
+
+    pub fn set_show_hidden(&self, show_hidden: bool) {
+        self.directory.set_show_hidden(show_hidden);
     }
 
     pub fn show_editor(&self, name: &str) {
@@ -219,6 +225,7 @@ impl PreviewPane {
             &entry,
             generation,
             PreviewLimits::default(),
+            adw::StyleManager::default().is_dark(),
             move |result| {
                 state.cancellable.borrow_mut().take();
                 if !state.gate.borrow().accepts(result.generation) {
@@ -255,9 +262,10 @@ impl PreviewPane {
                 } else {
                     ""
                 };
-                self.text
-                    .buffer()
-                    .set_text(&format!("{}{suffix}", preview.text));
+                let source = format!("{}{suffix}", preview.text);
+                let buffer = self.text.buffer();
+                buffer.set_text(&self.display_text(&source));
+                self.apply_line_number_style(&buffer, &source);
                 self.stack.set_visible_child_name("text");
             }
             Ok(PreviewContent::StyledText(preview)) => {
@@ -293,7 +301,8 @@ impl PreviewPane {
         } else {
             ""
         };
-        buffer.set_text(&format!("{}{suffix}", preview.text));
+        let source = format!("{}{suffix}", preview.text);
+        buffer.set_text(&self.display_text(&source));
 
         let background_tag = gtk::TextTag::builder()
             .background_rgba(&rgba(preview.background))
@@ -324,21 +333,24 @@ impl PreviewPane {
             });
             buffer.apply_tag(
                 tag,
-                &buffer.iter_at_offset(span.start),
-                &buffer.iter_at_offset(span.end),
+                &buffer.iter_at_offset(self.preview_offset(&source, span.start, false)),
+                &buffer.iter_at_offset(self.preview_offset(&source, span.end, true)),
             );
         }
+        self.apply_line_number_style(&buffer, &source);
         self.text.set_buffer(Some(&buffer));
     }
 
     fn render_markdown(&self, preview: MarkdownPreview) {
+        let dark = adw::StyleManager::default().is_dark();
         let buffer = gtk::TextBuffer::new(None);
         let suffix = if preview.truncated {
             "\n[Preview truncated]"
         } else {
             ""
         };
-        buffer.set_text(&format!("{}{suffix}", preview.text));
+        let source = format!("{}{suffix}", preview.text);
+        buffer.set_text(&self.display_text(&source));
 
         for span in preview.spans {
             let builder = gtk::TextTag::builder();
@@ -358,23 +370,101 @@ impl PreviewPane {
                 }
                 MarkdownStyle::Code => builder
                     .family("monospace")
-                    .background_rgba(&gdk::RGBA::new(0.20, 0.22, 0.26, 1.0))
-                    .foreground_rgba(&gdk::RGBA::new(0.90, 0.90, 0.90, 1.0))
+                    .background_rgba(&if dark {
+                        gdk::RGBA::new(0.20, 0.22, 0.26, 1.0)
+                    } else {
+                        gdk::RGBA::new(0.92, 0.93, 0.94, 1.0)
+                    })
+                    .foreground_rgba(&if dark {
+                        gdk::RGBA::new(0.90, 0.90, 0.90, 1.0)
+                    } else {
+                        gdk::RGBA::new(0.16, 0.17, 0.19, 1.0)
+                    })
                     .build(),
                 MarkdownStyle::Link => builder
-                    .foreground_rgba(&gdk::RGBA::new(0.25, 0.55, 0.95, 1.0))
+                    .foreground_rgba(&if dark {
+                        gdk::RGBA::new(0.35, 0.65, 1.0, 1.0)
+                    } else {
+                        gdk::RGBA::new(0.12, 0.38, 0.78, 1.0)
+                    })
                     .underline(gtk::pango::Underline::Single)
                     .build(),
             };
             buffer.tag_table().add(&tag);
             buffer.apply_tag(
                 &tag,
-                &buffer.iter_at_offset(span.start),
-                &buffer.iter_at_offset(span.end),
+                &buffer.iter_at_offset(self.preview_offset(&source, span.start, false)),
+                &buffer.iter_at_offset(self.preview_offset(&source, span.end, true)),
             );
         }
+        self.apply_line_number_style(&buffer, &source);
         self.text.set_buffer(Some(&buffer));
     }
+
+    fn display_text(&self, text: &str) -> String {
+        if self.show_line_numbers {
+            add_line_numbers(text)
+        } else {
+            text.to_owned()
+        }
+    }
+
+    fn preview_offset(&self, text: &str, offset: i32, at_end: bool) -> i32 {
+        if self.show_line_numbers {
+            numbered_offset(text, offset, at_end)
+        } else {
+            offset
+        }
+    }
+
+    fn apply_line_number_style(&self, buffer: &gtk::TextBuffer, text: &str) {
+        if !self.show_line_numbers {
+            return;
+        }
+        let tag = gtk::TextTag::builder()
+            .foreground_rgba(&if adw::StyleManager::default().is_dark() {
+                gdk::RGBA::new(0.55, 0.57, 0.60, 1.0)
+            } else {
+                gdk::RGBA::new(0.45, 0.47, 0.50, 1.0)
+            })
+            .build();
+        buffer.tag_table().add(&tag);
+        let prefix = line_number_width(text) + 3;
+        let mut position = 0_usize;
+        for line in text.split_inclusive('\n') {
+            buffer.apply_tag(
+                &tag,
+                &buffer.iter_at_offset(position as i32),
+                &buffer.iter_at_offset(position.saturating_add(prefix) as i32),
+            );
+            position = position.saturating_add(prefix + line.chars().count());
+        }
+    }
+}
+
+fn line_number_width(text: &str) -> usize {
+    text.lines().count().max(1).to_string().len()
+}
+
+fn add_line_numbers(text: &str) -> String {
+    let width = line_number_width(text);
+    text.split_inclusive('\n')
+        .enumerate()
+        .map(|(index, line)| format!("{:>width$} │ {line}", index + 1))
+        .collect()
+}
+
+fn numbered_offset(text: &str, offset: i32, at_end: bool) -> i32 {
+    let offset = offset.max(0) as usize;
+    let lines_before = text
+        .chars()
+        .take(offset)
+        .filter(|character| *character == '\n')
+        .count();
+    let ends_at_newline = at_end && offset > 0 && text.chars().nth(offset - 1) == Some('\n');
+    let prefixes = lines_before + 1 - usize::from(ends_at_newline);
+    i32::try_from(offset.saturating_add(prefixes * (line_number_width(text) + 3)))
+        .unwrap_or(i32::MAX)
 }
 
 fn rgba(color: (u8, u8, u8)) -> gdk::RGBA {
@@ -396,4 +486,18 @@ fn basic_metadata(entry: &FileEntry, status: &str) -> String {
             .map_or_else(|| "unknown".to_owned(), |value| format!("{value} bytes")),
         entry.location.uri()
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn line_numbers_preserve_line_boundaries_for_styled_offsets() {
+        let source = "a\nb";
+        assert_eq!(add_line_numbers(source), "1 │ a\n2 │ b");
+        assert_eq!(numbered_offset(source, 0, false), 4);
+        assert_eq!(numbered_offset(source, 2, true), 6);
+        assert_eq!(numbered_offset(source, 2, false), 10);
+    }
 }

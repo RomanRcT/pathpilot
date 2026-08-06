@@ -1,15 +1,15 @@
 # PathPilot
 
 PathPilot is a keyboard-first graphical file manager for Linux, built with Rust,
-GTK 4, and GIO. It combines ranger-style three-column navigation, Vim-inspired
-controls, conventional mouse interaction, responsive previews, and an embedded
-Neovim editor.
+GTK 4, libadwaita, and GIO. It combines ranger-style three-column navigation,
+Vim-inspired controls, conventional mouse interaction, responsive previews,
+an embedded shell, and an embedded Neovim editor.
 
 `v0.1.0` is the first preview release. The core local-file workflow is usable,
-but packaging, remote filesystems, accessibility review, and broader desktop
-validation are still in progress. See
+but remote filesystems, accessibility review, and broader desktop validation
+are still in progress. See
 [`pathpilot_project_plan.md`](pathpilot_project_plan.md) for the long-term plan.
-PathPilot requires GTK 4.12 or newer and GTK4 VTE.
+PathPilot requires GTK 4.12 or newer, libadwaita 1.5 or newer, and GTK4 VTE.
 
 ## Current features
 
@@ -47,6 +47,9 @@ PathPilot requires GTK 4.12 or newer and GTK4 VTE.
 - Text clipboard commands for filenames, directory paths, and full paths.
 - MIME-aware Open With history backed by the native GTK/GNOME application chooser.
 - Embedded Neovim editing for local text files through a GTK4 VTE terminal.
+- Toggleable hidden items and an embedded shell terminal synchronized with directory navigation.
+- Theme-aware source and Markdown previews with configurable line numbers.
+- Native libadwaita application window, header bar, About dialog, and system color-scheme support.
 
 The first launch opens the directory from which PathPilot is started. Later
 launches restore the last visited directory. Use `l` or double click to enter a
@@ -66,6 +69,8 @@ directory and `h` to return to its parent.
 | `v` | Toggle Visual selection |
 | `g h` / `g d` / `g r` | Home / Downloads / filesystem root |
 | `o e` / `o 1`…`o 9` | System Open With chooser / saved application |
+| `o t` | Toggle the embedded terminal |
+| `.` | Toggle hidden items |
 | `z` | Cycle pane layout |
 | `e` | Edit a local text file in embedded Neovim |
 | `:` / `F1` | Command palette / command reference |
@@ -73,7 +78,7 @@ directory and `h` to return to its parent.
 ## Current limitations
 
 - Local filesystem browsing and embedded editing only; non-local GIO backends are not complete.
-- No tabs, filtering, or hidden-file toggle yet.
+- No tabs or general-purpose filtering yet.
 - No PDF, archive, office document, audio, or video previews.
 - No remote filesystem backends or plugin API.
 - Embedded editing requires `nvim` and currently accepts local text files only.
@@ -115,7 +120,7 @@ access to the Flatpak portal service.
 Install the native dependencies:
 
 ```bash
-sudo dnf install rust cargo gtk4-devel vte291-gtk4-devel gcc pkgconf-pkg-config neovim
+sudo dnf install rust cargo gtk4-devel libadwaita-devel vte291-gtk4-devel gcc pkgconf-pkg-config neovim
 ```
 
 Build and run:
@@ -144,6 +149,15 @@ User settings are stored under `${XDG_CONFIG_HOME:-~/.config}/pathpilot/`.
 `config.toml` contains UI state, bookmarks, and Open With history;
 `keymap.toml` can override the default command bindings. See the focused guides
 in [`docs/`](docs/) for configuration examples and implemented behavior.
+
+Preview line numbers and the application color scheme can be configured under
+`[ui]` (close PathPilot before editing the file):
+
+```toml
+[ui]
+preview_line_numbers = true
+color_scheme = "system" # system, light, or dark
+```
 
 ## License
 

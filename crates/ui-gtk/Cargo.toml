@@ -6,6 +6,7 @@ license.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+adw.workspace = true
 gio.workspace = true
 glib.workspace = true
 gtk.workspace = true
