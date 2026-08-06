@@ -18,6 +18,8 @@ show/hide hidden files, theme-aware previews with line numbers, embedded
 Neovim, an embedded shell terminal synchronized with browser navigation, and
 debounced monitoring of the active and parent directories.
 Directory sorting is configurable and available through Vim-style `s` commands.
+Normal-mode `Space` selection is available for discontiguous file sets; Visual
+mode remains the contiguous-range workflow.
 Tabs, general filtering, drag-and-drop, remote GIO workflows, and richer
 document previews remain planned work.
 

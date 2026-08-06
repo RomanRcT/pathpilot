@@ -476,12 +476,18 @@ impl Browser {
                 .set_label(&format!("{:<8}{count:>3} selected{metadata}", "VISUAL"));
         } else {
             let clipboard = self.clipboard_status();
+            let selected_count = self.current.selected_entries().len();
             let metadata = self.current.selected_entry().map_or_else(
-                || "No selection".to_owned(),
+                || "No cursor selection".to_owned(),
                 |entry| compact_metadata(&entry),
             );
+            let selected = if selected_count > 1 {
+                format!("{selected_count} selected · ")
+            } else {
+                String::new()
+            };
             self.status
-                .set_label(&format!("{:<8}{metadata}{clipboard}", "NORMAL"));
+                .set_label(&format!("{:<8}{selected}{metadata}{clipboard}", "NORMAL"));
         }
         self.update_preview();
     }
@@ -688,7 +694,12 @@ impl Browser {
         if self.mode.borrow().visual().is_some() {
             self.current.selected_entries()
         } else {
-            self.current.selected_entry().into_iter().collect()
+            let selected = self.current.selected_entries();
+            if selected.is_empty() {
+                self.current.selected_entry().into_iter().collect()
+            } else {
+                selected
+            }
         }
     }
 
@@ -1982,6 +1993,7 @@ fn install_keyboard_controller(
     reference.extend([
         ("e".to_owned(), "Edit in Neovim"),
         ("f".to_owned(), "Find by name"),
+        ("Space".to_owned(), "Toggle selection"),
         ("s …".to_owned(), "Change sorting"),
         (".".to_owned(), "Toggle hidden items"),
         ("o t".to_owned(), "Toggle terminal"),
@@ -2261,6 +2273,21 @@ fn install_keyboard_controller(
                         .map(|place| (place.key.to_string(), place.label.as_str())),
                 );
                 key_hints.set_visible(true);
+                return glib::Propagation::Stop;
+            }
+            if character == ' ' {
+                parser.borrow_mut().reset();
+                if let Some(browser) = browser.upgrade() {
+                    if browser.mode.borrow().visual().is_some() {
+                        browser
+                            .status
+                            .set_label("VISUAL  Use v/Escape to finish the range first");
+                    } else {
+                        browser.current.toggle_selection();
+                        browser.selection_changed(browser.current.cursor_position());
+                    }
+                }
+                restore_hint_panel(&key_hints, hints_enabled.get(), &command_reference);
                 return glib::Propagation::Stop;
             }
             if character == 's' {
