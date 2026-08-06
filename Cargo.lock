@@ -672,7 +672,7 @@ dependencies = [
 
 [[package]]
 name = "pathpilot"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "gio",
  "gtk4",
@@ -684,7 +684,7 @@ dependencies = [
 
 [[package]]
 name = "pathpilot-config"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "pathpilot-core",
  "serde",
@@ -694,11 +694,11 @@ dependencies = [
 
 [[package]]
 name = "pathpilot-core"
-version = "0.1.0"
+version = "0.2.0"
 
 [[package]]
 name = "pathpilot-fs-local"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "gio",
  "glib",
@@ -709,7 +709,7 @@ dependencies = [
 
 [[package]]
 name = "pathpilot-operations"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "futures-util",
  "gio",
@@ -721,7 +721,7 @@ dependencies = [
 
 [[package]]
 name = "pathpilot-preview"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "gdk-pixbuf",
  "gio",
@@ -735,7 +735,7 @@ dependencies = [
 
 [[package]]
 name = "pathpilot-ui-gtk"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "gio",
  "glib",

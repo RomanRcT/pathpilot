@@ -26,6 +26,11 @@
   </requires>
   <content_rating type="oars-1.1" />
   <releases>
+    <release version="0.2.0" date="2026-08-06">
+      <description>
+        <p>Added independent Space selection, directory monitoring, sorting, an embedded terminal workflow, and improved GNOME integration.</p>
+      </description>
+    </release>
     <release version="0.1.0" date="2026-08-04">
       <description>
         <p>First public preview with local navigation, previews, file operations, Open With, bookmarks, and embedded Neovim editing.</p>

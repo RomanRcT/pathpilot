@@ -1,5 +1,5 @@
 Name:           pathpilot
-Version:        0.1.0
+Version:        0.2.0
 Release:        1%{?dist}
 Summary:        Keyboard-first graphical file manager
 
@@ -11,6 +11,9 @@ BuildRequires:  cargo
 BuildRequires:  desktop-file-utils
 BuildRequires:  gcc
 BuildRequires:  appstream
+BuildRequires:  libadwaita-devel
+BuildRequires:  make
+BuildRequires:  pkgconf-pkg-config
 BuildRequires:  pkgconfig(libadwaita-1) >= 1.5
 BuildRequires:  pkgconfig(gtk4) >= 4.12
 BuildRequires:  pkgconfig(vte-2.91-gtk4)
@@ -44,5 +47,5 @@ appstreamcli validate --no-net %{buildroot}%{_metainfodir}/io.github.RomanRcT.Pa
 %{_metainfodir}/io.github.RomanRcT.PathPilot.metainfo.xml
 
 %changelog
-* Tue Aug 04 2026 RomanRcT <RomanRcT@users.noreply.github.com> - 0.1.0-1
-- First preview package
+* Thu Aug 06 2026 RomanRcT <RomanRcT@users.noreply.github.com> - 0.2.0-1
+- Add independent Space selection, directory monitoring, sorting, and terminal workflow

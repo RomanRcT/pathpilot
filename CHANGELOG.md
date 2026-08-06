@@ -4,6 +4,10 @@ All notable changes to PathPilot are documented in this file.
 
 ## [Unreleased]
 
+No changes yet.
+
+## [0.2.0] - 2026-08-06
+
 ### Added
 
 - Independent keyboard selection with `Space`, including discontiguous file sets for filesystem operations.
@@ -51,5 +55,6 @@ First preview release.
 - Tabs, filtering, hidden-file controls, richer previews, drag-and-drop, and plugin APIs are not implemented.
 - This is a preview release and configuration formats may evolve before a stable release.
 
+[0.2.0]: https://github.com/RomanRcT/pathpilot/releases/tag/v0.2.0
 [0.1.0]: https://github.com/RomanRcT/pathpilot/releases/tag/v0.1.0
-[Unreleased]: https://github.com/RomanRcT/pathpilot/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/RomanRcT/pathpilot/compare/v0.2.0...HEAD

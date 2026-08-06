@@ -16,13 +16,13 @@ on:
       tag:
         description: Existing GitHub release tag to receive the packages
         required: true
-        default: v0.1.0
+        default: v0.2.0
 
 permissions:
   contents: write
 
 env:
-  RELEASE_TAG: ${{ github.event_name == 'pull_request' && 'v0.1.0' || (github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name) }}
+  RELEASE_TAG: ${{ github.event_name == 'pull_request' && 'v0.2.0' || (github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name) }}
 
 jobs:
   rpm:
@@ -33,7 +33,8 @@ jobs:
       - name: Install build dependencies
         run: >-
           dnf install --assumeyes
-          appstream cargo desktop-file-utils gcc git make rpm-build rust
+          appstream cargo desktop-file-utils gcc git gzip make pkgconf-pkg-config rpm-build rust tar
+          libadwaita-devel
           gtk4-devel vte291-gtk4-devel
 
       - name: Check out repository

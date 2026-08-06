@@ -5,7 +5,7 @@ GTK 4, libadwaita, and GIO. It combines ranger-style three-column navigation,
 Vim-inspired controls, conventional mouse interaction, responsive previews,
 an embedded shell, and an embedded Neovim editor.
 
-`v0.1.0` is the first preview release. The core local-file workflow is usable,
+`v0.2.0` is the current preview release. The core local-file workflow is usable,
 but remote filesystems, accessibility review, and broader desktop validation
 are still in progress. See
 [`pathpilot_project_plan.md`](pathpilot_project_plan.md) for the long-term plan.
@@ -103,13 +103,13 @@ Download release assets from the GitHub Releases page. On Fedora, install the
 RPM with dependency resolution:
 
 ```bash
-sudo dnf install ./pathpilot-0.1.0-1.fc44.x86_64.rpm
+sudo dnf install ./pathpilot-0.2.0-1.*.x86_64.rpm
 ```
 
 Install the single-file Flatpak bundle with:
 
 ```bash
-flatpak install --user ./PathPilot-0.1.0-x86_64.flatpak
+flatpak install --user ./PathPilot-0.2.0-x86_64.flatpak
 flatpak run io.github.RomanRcT.PathPilot
 ```
 
@@ -147,6 +147,33 @@ cargo test --workspace
 ```
 
 GTK 4 applications require a graphical session. PathPilot targets Wayland first but can also use another GDK backend supported by the local GTK installation.
+
+## Build an RPM locally
+
+On Fedora, install the packaging toolchain and native development headers:
+
+```bash
+sudo dnf install cargo rust rpm-build make gcc pkgconf-pkg-config \
+  gtk4-devel libadwaita-devel vte291-gtk4-devel \
+  desktop-file-utils appstream
+```
+
+Build and validate the package from the repository root:
+
+```bash
+rm -rf "$HOME/rpmbuild/BUILD" "$HOME/rpmbuild/BUILDROOT"
+mkdir -p "$HOME/rpmbuild/SOURCES"
+version=$(sed -n 's/^Version:[[:space:]]*//p' packaging/rpm/pathpilot.spec)
+tar --exclude=.git --exclude=target \
+  --transform="s,^,pathpilot-${version}/," \
+  -czf "$HOME/rpmbuild/SOURCES/pathpilot-${version}.tar.gz" .
+rpmbuild -ba packaging/rpm/pathpilot.spec
+```
+
+The binary RPM is written to `~/rpmbuild/RPMS/x86_64/`. GitHub release builds
+use the same source archive and spec, and attach both the binary and source RPM
+to the tagged release. To publish packages, push a matching version tag such
+as `v0.2.0`; the workflow can also be started manually for an existing tag.
 
 User settings are stored under `${XDG_CONFIG_HOME:-~/.config}/pathpilot/`.
 `config.toml` contains UI state, bookmarks, and Open With history;
