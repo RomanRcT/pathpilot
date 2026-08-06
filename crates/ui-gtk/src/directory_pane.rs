@@ -32,6 +32,7 @@ pub struct DirectoryPane {
     cursor: Rc<Cell<u32>>,
     visual_anchor: Rc<Cell<Option<u32>>>,
     changing_selection: Rc<Cell<bool>>,
+    independent_selection: Rc<Cell<bool>>,
     show_hidden: Rc<Cell<bool>>,
 }
 
@@ -58,6 +59,7 @@ impl DirectoryPane {
         let cursor = Rc::new(Cell::new(0));
         let visual_anchor = Rc::new(Cell::new(None::<u32>));
         let changing_selection = Rc::new(Cell::new(false));
+        let independent_selection = Rc::new(Cell::new(false));
         selection.connect_selection_changed({
             let cursor = cursor.clone();
             let visual_anchor = visual_anchor.clone();
@@ -138,6 +140,7 @@ impl DirectoryPane {
             cursor,
             visual_anchor,
             changing_selection,
+            independent_selection,
             show_hidden: Rc::new(Cell::new(false)),
         }
     }
@@ -160,6 +163,7 @@ impl DirectoryPane {
     pub fn load(&self, location: &Location, on_finished: impl Fn(bool) + 'static) {
         self.cancel();
         self.store.remove_all();
+        self.independent_selection.set(false);
         let presentation = present_location(
             location,
             std::env::var_os("HOME")
@@ -304,7 +308,25 @@ impl DirectoryPane {
         }
     }
 
+    pub fn toggle_selection_and_advance(&self) {
+        let count = self.selection.n_items();
+        if count == 0 {
+            return;
+        }
+        let current = self.cursor_position();
+        self.independent_selection.set(true);
+        self.changing_selection.set(true);
+        self.selection
+            .select_item(current, !self.selection.is_selected(current));
+        let next = current.saturating_add(1).min(count - 1);
+        self.cursor.set(next);
+        self.selection.select_item(next, false);
+        self.changing_selection.set(false);
+        self.list.scroll_to(next, gtk::ListScrollFlags::FOCUS, None);
+    }
+
     pub fn begin_visual(&self) {
+        self.independent_selection.set(false);
         self.visual_anchor.set(Some(self.cursor_position()));
         self.apply_selection();
     }
@@ -325,7 +347,8 @@ impl DirectoryPane {
             self.selection
                 .select_range(start, anchor.abs_diff(cursor) + 1, true);
         } else {
-            self.selection.select_item(cursor, true);
+            self.selection
+                .select_item(cursor, !self.independent_selection.get());
         }
         self.changing_selection.set(false);
     }
