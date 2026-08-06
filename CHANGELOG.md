@@ -6,6 +6,7 @@ All notable changes to PathPilot are documented in this file.
 
 ### Added
 
+- Persistent Vim-style directory sorting by name, extension, size, or modification time through the `s` prefix.
 - Debounced GIO monitoring for the current and parent directories, preserving selection across external filesystem changes.
 - Native embedded shell terminal opened with `o t`, starting in the active directory and synchronizing shell directory changes back to the browser.
 - Header-bar controls for hidden items and the terminal, plus a keyboard hidden-item toggle on `.`.

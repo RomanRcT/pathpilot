@@ -6,7 +6,7 @@ use std::{
 };
 
 use gtk::{gdk, gio, glib, prelude::*};
-use pathpilot_core::{FileEntry, FileKind, Generation};
+use pathpilot_core::{FileEntry, FileKind, Generation, SortMode};
 use pathpilot_preview::{
     MarkdownPreview, MarkdownStyle, PreviewCache, PreviewContent, PreviewGate, PreviewLimits,
     PreviewResult, StyledTextPreview, load_preview,
@@ -142,6 +142,10 @@ impl PreviewPane {
 
     pub fn set_show_hidden(&self, show_hidden: bool) {
         self.directory.set_show_hidden(show_hidden);
+    }
+
+    pub fn set_sort_mode(&self, mode: SortMode) {
+        self.directory.set_sort_mode(mode);
     }
 
     pub fn show_editor(&self, name: &str) {

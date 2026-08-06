@@ -5,7 +5,9 @@ use std::{
 };
 
 use gtk::{gio, glib, prelude::*};
-use pathpilot_core::{FileEntry, FileKind, GenerationTracker, Location, present_location};
+use pathpilot_core::{
+    FileEntry, FileKind, GenerationTracker, Location, SortMode, present_location,
+};
 use pathpilot_fs_local::{DirectoryEvent, load_directory};
 use tracing::{debug, info, warn};
 
@@ -21,6 +23,8 @@ pub struct DirectoryPane {
     pub list: gtk::ListView,
     pub selection: gtk::MultiSelection,
     store: gio::ListStore,
+    sorter: gtk::CustomSorter,
+    sort_mode: Rc<Cell<SortMode>>,
     title: gtk::Label,
     role: String,
     status: gtk::Label,
@@ -34,18 +38,22 @@ pub struct DirectoryPane {
 impl DirectoryPane {
     pub fn new(role: &str) -> Self {
         let store = gio::ListStore::new::<glib::BoxedAnyObject>();
-        let sorter = gtk::CustomSorter::new(|left, right| {
-            let left = left
-                .downcast_ref::<glib::BoxedAnyObject>()
-                .expect("directory model contains BoxedAnyObject");
-            let right = right
-                .downcast_ref::<glib::BoxedAnyObject>()
-                .expect("directory model contains BoxedAnyObject");
-            left.borrow::<FileEntry>()
-                .compare_name(&right.borrow::<FileEntry>())
-                .into()
+        let sort_mode = Rc::new(Cell::new(SortMode::default()));
+        let sorter = gtk::CustomSorter::new({
+            let sort_mode = sort_mode.clone();
+            move |left, right| {
+                let left = left
+                    .downcast_ref::<glib::BoxedAnyObject>()
+                    .expect("directory model contains BoxedAnyObject");
+                let right = right
+                    .downcast_ref::<glib::BoxedAnyObject>()
+                    .expect("directory model contains BoxedAnyObject");
+                left.borrow::<FileEntry>()
+                    .compare(&right.borrow::<FileEntry>(), sort_mode.get())
+                    .into()
+            }
         });
-        let sorted = gtk::SortListModel::new(Some(store.clone()), Some(sorter));
+        let sorted = gtk::SortListModel::new(Some(store.clone()), Some(sorter.clone()));
         let selection = gtk::MultiSelection::new(Some(sorted));
         let cursor = Rc::new(Cell::new(0));
         let visual_anchor = Rc::new(Cell::new(None::<u32>));
@@ -121,6 +129,8 @@ impl DirectoryPane {
             list,
             selection,
             store,
+            sorter,
+            sort_mode,
             title,
             role: role.to_owned(),
             status,
@@ -134,6 +144,17 @@ impl DirectoryPane {
 
     pub fn set_show_hidden(&self, show_hidden: bool) {
         self.show_hidden.set(show_hidden);
+    }
+
+    pub fn set_sort_mode(&self, mode: SortMode) {
+        if self.sort_mode.replace(mode) == mode {
+            return;
+        }
+        let selected = self.selected_entry().map(|entry| entry.location);
+        self.sorter.changed(gtk::SorterChange::Different);
+        if let Some(location) = selected {
+            self.select_location(&location);
+        }
     }
 
     pub fn load(&self, location: &Location, on_finished: impl Fn(bool) + 'static) {
