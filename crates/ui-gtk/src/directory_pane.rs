@@ -1,5 +1,6 @@
 use std::{
     cell::{Cell, RefCell},
+    collections::HashSet,
     rc::Rc,
     time::{Instant, SystemTime, UNIX_EPOCH},
 };
@@ -35,6 +36,7 @@ pub struct DirectoryPane {
     independent_selection: Rc<Cell<bool>>,
     show_hidden: Rc<Cell<bool>>,
     visible_rows: Rc<RefCell<Vec<(u32, gtk::Box)>>>,
+    independent_selected: Rc<RefCell<HashSet<u32>>>,
 }
 
 impl DirectoryPane {
@@ -62,6 +64,7 @@ impl DirectoryPane {
         let changing_selection = Rc::new(Cell::new(false));
         let independent_selection = Rc::new(Cell::new(false));
         let visible_rows = Rc::new(RefCell::new(Vec::new()));
+        let independent_selected = Rc::new(RefCell::new(HashSet::new()));
         selection.connect_selection_changed({
             let cursor = cursor.clone();
             let visual_anchor = visual_anchor.clone();
@@ -117,8 +120,18 @@ impl DirectoryPane {
             let visible_rows = visible_rows.clone();
             let selection = selection.clone();
             let cursor = cursor.clone();
+            let independent_selected = independent_selected.clone();
+            let independent_selection = independent_selection.clone();
+            let visual_anchor = visual_anchor.clone();
             selection.clone().connect_selection_changed(move |_, _, _| {
-                refresh_row_states(&visible_rows, &selection, cursor.get());
+                refresh_row_states(
+                    &visible_rows,
+                    &selection,
+                    &independent_selected,
+                    independent_selection.get(),
+                    independent_selection.get() || visual_anchor.get().is_some(),
+                    cursor.get(),
+                );
             });
         }
         list.set_single_click_activate(false);
@@ -170,6 +183,7 @@ impl DirectoryPane {
             independent_selection,
             show_hidden: Rc::new(Cell::new(false)),
             visible_rows,
+            independent_selected,
         }
     }
 
@@ -192,6 +206,7 @@ impl DirectoryPane {
         self.cancel();
         self.store.remove_all();
         self.independent_selection.set(false);
+        self.independent_selected.borrow_mut().clear();
         let presentation = present_location(
             location,
             std::env::var_os("HOME")
@@ -299,8 +314,15 @@ impl DirectoryPane {
     }
 
     pub fn selected_entries(&self) -> Vec<FileEntry> {
-        (0..self.selection.n_items())
-            .filter(|position| self.selection.is_selected(*position))
+        let positions: Vec<u32> = if self.independent_selection.get() {
+            self.independent_selected.borrow().iter().copied().collect()
+        } else {
+            (0..self.selection.n_items())
+                .filter(|position| self.selection.is_selected(*position))
+                .collect()
+        };
+        positions
+            .into_iter()
             .filter_map(|position| {
                 self.selection
                     .item(position)
@@ -342,19 +364,29 @@ impl DirectoryPane {
             return;
         }
         let current = self.cursor_position();
-        self.independent_selection.set(true);
-        self.changing_selection.set(true);
-        if self.selection.is_selected(current) {
-            self.selection.unselect_item(current);
-        } else {
-            self.selection.select_item(current, false);
+        if !self.independent_selection.get() {
+            self.independent_selection.set(true);
+            self.independent_selected.borrow_mut().insert(current);
+            self.refresh_row_states();
+            let pane = self.clone();
+            glib::idle_add_local_once(move || pane.refresh_row_states());
+            return;
         }
-        self.changing_selection.set(false);
+        self.independent_selection.set(true);
+        if !self.independent_selected.borrow_mut().remove(&current) {
+            self.independent_selected.borrow_mut().insert(current);
+        } else {
+            // The cursor remains selected by the normal GTK selection model;
+            // only the independent set is toggled here.
+        }
         self.refresh_row_states();
+        let pane = self.clone();
+        glib::idle_add_local_once(move || pane.refresh_row_states());
     }
 
     pub fn begin_visual(&self) {
         self.independent_selection.set(false);
+        self.independent_selected.borrow_mut().clear();
         self.visual_anchor.set(Some(self.cursor_position()));
         self.apply_selection();
         self.refresh_row_states();
@@ -376,6 +408,8 @@ impl DirectoryPane {
             let start = anchor.min(cursor);
             self.selection
                 .select_range(start, anchor.abs_diff(cursor) + 1, true);
+        } else if self.independent_selection.get() {
+            self.selection.select_item(cursor, true);
         } else {
             self.selection
                 .select_item(cursor, !self.independent_selection.get());
@@ -385,7 +419,14 @@ impl DirectoryPane {
     }
 
     fn refresh_row_states(&self) {
-        refresh_row_states(&self.visible_rows, &self.selection, self.cursor_position());
+        refresh_row_states(
+            &self.visible_rows,
+            &self.selection,
+            &self.independent_selected,
+            self.independent_selection.get(),
+            self.independent_selection.get() || self.visual_anchor.get().is_some(),
+            self.cursor_position(),
+        );
     }
 
     pub fn select_location(&self, location: &Location) -> bool {
@@ -453,6 +494,15 @@ fn bind_row(item: &glib::Object, visible_rows: &Rc<RefCell<Vec<(u32, gtk::Box)>>
         .child()
         .and_downcast::<gtk::Box>()
         .expect("factory child is a Box");
+    // ListView reuses row widgets while scrolling; never carry selection
+    // styling from the item that was previously bound to this row.
+    row.remove_css_class("independent-selected");
+    row.remove_css_class("cursor-item");
+    let mut row_child = row.first_child();
+    while let Some(widget) = row_child {
+        widget.remove_css_class("independent-selected");
+        row_child = widget.next_sibling();
+    }
     let position = item.position();
     {
         let mut rows = visible_rows.borrow_mut();
@@ -490,22 +540,46 @@ fn bind_row(item: &glib::Object, visible_rows: &Rc<RefCell<Vec<(u32, gtk::Box)>>
 fn refresh_row_states(
     visible_rows: &Rc<RefCell<Vec<(u32, gtk::Box)>>>,
     selection: &gtk::MultiSelection,
+    independent_selected: &Rc<RefCell<HashSet<u32>>>,
+    independent: bool,
+    highlight_selection: bool,
     cursor: u32,
 ) {
     for (position, row) in visible_rows.borrow().iter() {
         if *position == gtk::INVALID_LIST_POSITION {
             continue;
         }
-        if selection.is_selected(*position) {
+        let selected = if !highlight_selection {
+            false
+        } else if independent {
+            independent_selected.borrow().contains(position)
+        } else {
+            selection.is_selected(*position)
+        };
+        if selected {
             row.add_css_class("independent-selected");
         } else {
             row.remove_css_class("independent-selected");
         }
-        if *position == cursor {
-            row.add_css_class("cursor-item");
-        } else {
-            row.remove_css_class("cursor-item");
+        let mut child = row.first_child();
+        let mut label_index = 0;
+        while let Some(widget) = child {
+            if let Some(label) = widget.downcast_ref::<gtk::Label>() {
+                let plain_text = label.text().trim_start_matches("● ").to_owned();
+                if selected {
+                    let text = glib::markup_escape_text(&plain_text);
+                    let marker = if label_index == 0 { "● " } else { "" };
+                    label.set_markup(&format!(
+                        "<span foreground=\"#d95555\" weight=\"bold\">{marker}{text}</span>"
+                    ));
+                } else {
+                    label.set_label(&plain_text);
+                }
+                label_index += 1;
+            }
+            child = widget.next_sibling();
         }
+        let _ = cursor;
     }
 }
 
