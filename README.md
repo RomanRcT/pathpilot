@@ -72,6 +72,7 @@ directory and `h` to return to its parent.
 | `o e` / `o 1`…`o 9` | System Open With chooser / saved application |
 | `o t` | Toggle the embedded terminal |
 | `.` | Toggle hidden items |
+| `s n/e/z/m` / `s r` | Sort by name/extension/size/modified time / reverse |
 | `z` | Cycle pane layout |
 | `e` | Edit a local text file in embedded Neovim |
 | `:` / `F1` | Command palette / command reference |
@@ -158,6 +159,8 @@ Preview line numbers and the application color scheme can be configured under
 [ui]
 preview_line_numbers = true
 color_scheme = "system" # system, light, or dark
+sort_key = "name"       # name, extension, size, or modified
+sort_descending = false
 ```
 
 ## License

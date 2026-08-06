@@ -17,7 +17,7 @@ use gtk::{gdk, gio, glib};
 use pathpilot_core::{
     AppCommand, AppMode, ClipboardAction, ClipboardItem, CommandPalette, FileEntry, FileKind,
     FilenameFind, InputModeKind, KeyResult, KeySequenceParser, Location, NavigationState,
-    OperationClipboard, OperationId, PaneLayout, present_location,
+    OperationClipboard, OperationId, PaneLayout, SortKey, SortMode, present_location,
 };
 use pathpilot_operations::{
     BatchOperationResult, OperationHandle, OperationResult, TransferSpec, copy_items,
@@ -68,6 +68,7 @@ struct Browser {
     status_bar: gtk::Box,
     status: gtk::Label,
     git_status: gtk::Label,
+    sort_status: gtk::Label,
     next_operation_id: Cell<u64>,
     find: RefCell<FilenameFind>,
     command_palette: RefCell<CommandPalette>,
@@ -97,6 +98,7 @@ struct Browser {
     directory_monitors: RefCell<Vec<gio::FileMonitor>>,
     monitor_refresh: RefCell<Option<glib::SourceId>>,
     monitor_generation: Cell<u64>,
+    sort_mode: Cell<SortMode>,
     settings: Rc<RefCell<pathpilot_config::Settings>>,
     settings_path: Option<std::path::PathBuf>,
 }
@@ -107,6 +109,16 @@ impl Browser {
         settings: Rc<RefCell<pathpilot_config::Settings>>,
         settings_path: Option<std::path::PathBuf>,
     ) -> Rc<Self> {
+        let ui = settings.borrow().ui.clone();
+        let sort_mode = SortMode {
+            key: match ui.sort_key.as_str() {
+                "extension" => SortKey::Extension,
+                "size" => SortKey::Size,
+                "modified" => SortKey::Modified,
+                _ => SortKey::Name,
+            },
+            descending: ui.sort_descending,
+        };
         let status = gtk::Label::builder()
             .label("NORMAL")
             .xalign(0.0)
@@ -115,6 +127,11 @@ impl Browser {
             .build();
         let git_status = gtk::Label::builder().xalign(1.0).visible(false).build();
         git_status.add_css_class("git-status");
+        let sort_status = gtk::Label::builder()
+            .label(format!("sort: {}", sort_mode.label()))
+            .xalign(1.0)
+            .build();
+        sort_status.add_css_class("dim-label");
         let status_bar = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
             .spacing(16)
@@ -122,6 +139,7 @@ impl Browser {
         status_bar.add_css_class("status-line");
         status_bar.add_css_class("status-normal");
         status_bar.append(&status);
+        status_bar.append(&sort_status);
         status_bar.append(&git_status);
         let styled_status_bar = status_bar.clone();
         status.connect_label_notify(move |label| {
@@ -172,7 +190,6 @@ impl Browser {
         input_bar.append(&input_title);
         input_bar.append(&input_entry);
         input_bar.append(&input_help);
-        let ui = settings.borrow().ui.clone();
         let terminal = vte::Terminal::new();
         terminal.set_hexpand(true);
         terminal.set_vexpand(true);
@@ -207,6 +224,7 @@ impl Browser {
             status_bar,
             status,
             git_status,
+            sort_status,
             next_operation_id: Cell::new(1),
             find: RefCell::new(FilenameFind::default()),
             command_palette: RefCell::new(CommandPalette::default()),
@@ -240,6 +258,7 @@ impl Browser {
             directory_monitors: RefCell::new(Vec::new()),
             monitor_refresh: RefCell::new(None),
             monitor_generation: Cell::new(0),
+            sort_mode: Cell::new(sort_mode),
             settings,
             settings_path,
         })
@@ -332,6 +351,31 @@ impl Browser {
         } else {
             "NORMAL  Hidden items hidden"
         });
+    }
+
+    fn set_sort_mode(&self, mode: SortMode) {
+        self.sort_mode.set(mode);
+        self.parent.set_sort_mode(mode);
+        self.current.set_sort_mode(mode);
+        self.preview.set_sort_mode(mode);
+        self.sort_status
+            .set_label(&format!("sort: {}", mode.label()));
+        let mut settings = self.settings.borrow_mut();
+        settings.ui.sort_key = match mode.key {
+            SortKey::Name => "name",
+            SortKey::Extension => "extension",
+            SortKey::Size => "size",
+            SortKey::Modified => "modified",
+        }
+        .to_owned();
+        settings.ui.sort_descending = mode.descending;
+        if let Some(path) = self.settings_path.as_deref()
+            && let Err(error) = pathpilot_config::save_settings(path, &settings)
+        {
+            warn!(%error, "could not persist sort mode");
+        }
+        self.status
+            .set_label(&format!("NORMAL  Sorted by {}", mode.label()));
     }
 
     fn toggle_terminal(self: &Rc<Self>) {
@@ -1716,6 +1760,10 @@ pub fn build_window(app: &adw::Application) -> adw::ApplicationWindow {
     browser.parent.set_show_hidden(show_hidden);
     browser.current.set_show_hidden(show_hidden);
     browser.preview.set_show_hidden(show_hidden);
+    let sort_mode = browser.sort_mode.get();
+    browser.parent.set_sort_mode(sort_mode);
+    browser.current.set_sort_mode(sort_mode);
+    browser.preview.set_sort_mode(sort_mode);
     browser.connect_editor_exit();
 
     let window = adw::ApplicationWindow::builder()
@@ -1934,6 +1982,7 @@ fn install_keyboard_controller(
     reference.extend([
         ("e".to_owned(), "Edit in Neovim"),
         ("f".to_owned(), "Find by name"),
+        ("s …".to_owned(), "Change sorting"),
         (".".to_owned(), "Toggle hidden items"),
         ("o t".to_owned(), "Toggle terminal"),
         ("o …".to_owned(), "Open with application"),
@@ -1975,6 +2024,8 @@ fn install_keyboard_controller(
     let places = places.clone();
     let place_pending = Rc::new(Cell::new(false));
     let place_pending_for_keys = place_pending.clone();
+    let sort_pending = Rc::new(Cell::new(false));
+    let sort_pending_for_keys = sort_pending.clone();
     let open_with_pending = Rc::new(RefCell::new(None::<(Option<FileEntry>, Vec<gio::AppInfo>)>));
     let open_with_pending_for_keys = open_with_pending.clone();
     controller.connect_key_pressed(move |_, key, _, modifiers| {
@@ -2051,6 +2102,7 @@ fn install_keyboard_controller(
 
         if key == gdk::Key::Escape {
             place_pending_for_keys.set(false);
+            sort_pending_for_keys.set(false);
             open_with_pending_for_keys.borrow_mut().take();
             if browser
                 .upgrade()
@@ -2129,6 +2181,39 @@ fn install_keyboard_controller(
         if !parser.borrow().is_pending()
             && let Some(character) = key.to_unicode()
         {
+            if sort_pending_for_keys.replace(false) {
+                if let Some(browser) = browser.upgrade() {
+                    let current = browser.sort_mode.get();
+                    let mode = match character {
+                        'n' => Some(SortMode {
+                            key: SortKey::Name,
+                            descending: false,
+                        }),
+                        'e' => Some(SortMode {
+                            key: SortKey::Extension,
+                            descending: false,
+                        }),
+                        'z' => Some(SortMode {
+                            key: SortKey::Size,
+                            descending: false,
+                        }),
+                        'm' => Some(SortMode {
+                            key: SortKey::Modified,
+                            descending: false,
+                        }),
+                        'r' => Some(SortMode {
+                            descending: !current.descending,
+                            ..current
+                        }),
+                        _ => None,
+                    };
+                    if let Some(mode) = mode {
+                        browser.set_sort_mode(mode);
+                    }
+                }
+                restore_hint_panel(&key_hints, hints_enabled.get(), &command_reference);
+                return glib::Propagation::Stop;
+            }
             if let Some((entry, apps)) = open_with_pending_for_keys.borrow_mut().take() {
                 if let Some(browser) = browser.upgrade()
                     && let Some(window) = weak_window.upgrade()
@@ -2174,6 +2259,22 @@ fn install_keyboard_controller(
                     places
                         .iter()
                         .map(|place| (place.key.to_string(), place.label.as_str())),
+                );
+                key_hints.set_visible(true);
+                return glib::Propagation::Stop;
+            }
+            if character == 's' {
+                parser.borrow_mut().reset();
+                sort_pending_for_keys.set(true);
+                populate_hint_grid(
+                    &key_hints,
+                    [
+                        ("n".to_owned(), "Name"),
+                        ("e".to_owned(), "Extension"),
+                        ("z".to_owned(), "Size"),
+                        ("m".to_owned(), "Modified time"),
+                        ("r".to_owned(), "Reverse order"),
+                    ],
                 );
                 key_hints.set_visible(true);
                 return glib::Propagation::Stop;

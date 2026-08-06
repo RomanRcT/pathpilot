@@ -93,18 +93,115 @@ pub struct FileEntry {
 
 impl FileEntry {
     pub fn compare_name(&self, other: &Self) -> Ordering {
+        self.compare(other, SortMode::default())
+    }
+
+    pub fn compare(&self, other: &Self, mode: SortMode) -> Ordering {
         match (
             self.kind == FileKind::Directory,
             other.kind == FileKind::Directory,
         ) {
-            (true, false) => Ordering::Less,
-            (false, true) => Ordering::Greater,
-            _ => self
-                .display_name
-                .to_lowercase()
-                .cmp(&other.display_name.to_lowercase())
-                .then_with(|| self.display_name.cmp(&other.display_name)),
+            (true, false) => return Ordering::Less,
+            (false, true) => return Ordering::Greater,
+            _ => {}
         }
+        let ordering = match mode.key {
+            SortKey::Name => compare_text(&self.display_name, &other.display_name),
+            SortKey::Extension => compare_optional_text(
+                file_extension(&self.display_name),
+                file_extension(&other.display_name),
+                mode.descending,
+            ),
+            SortKey::Size => compare_optional(self.size, other.size, mode.descending),
+            SortKey::Modified => compare_optional(self.modified, other.modified, mode.descending),
+        };
+        let ordering = if mode.key == SortKey::Name && mode.descending {
+            ordering.reverse()
+        } else {
+            ordering
+        };
+        ordering.then_with(|| {
+            let names = compare_text(&self.display_name, &other.display_name);
+            if mode.descending {
+                names.reverse()
+            } else {
+                names
+            }
+        })
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum SortKey {
+    #[default]
+    Name,
+    Extension,
+    Size,
+    Modified,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct SortMode {
+    pub key: SortKey,
+    pub descending: bool,
+}
+
+impl SortMode {
+    pub fn label(self) -> &'static str {
+        match (self.key, self.descending) {
+            (SortKey::Name, false) => "name ↑",
+            (SortKey::Name, true) => "name ↓",
+            (SortKey::Extension, false) => "extension ↑",
+            (SortKey::Extension, true) => "extension ↓",
+            (SortKey::Size, false) => "size ↑",
+            (SortKey::Size, true) => "size ↓",
+            (SortKey::Modified, false) => "modified ↑",
+            (SortKey::Modified, true) => "modified ↓",
+        }
+    }
+}
+
+fn compare_text(left: &str, right: &str) -> Ordering {
+    left.to_lowercase()
+        .cmp(&right.to_lowercase())
+        .then_with(|| left.cmp(right))
+}
+
+fn file_extension(name: &str) -> Option<&str> {
+    std::path::Path::new(name)
+        .extension()
+        .and_then(std::ffi::OsStr::to_str)
+}
+
+fn compare_optional<T: Ord>(left: Option<T>, right: Option<T>, descending: bool) -> Ordering {
+    match (left, right) {
+        (Some(left), Some(right)) => {
+            let ordering = left.cmp(&right);
+            if descending {
+                ordering.reverse()
+            } else {
+                ordering
+            }
+        }
+        (Some(_), None) => Ordering::Less,
+        (None, Some(_)) => Ordering::Greater,
+        (None, None) => Ordering::Equal,
+    }
+}
+
+fn compare_optional_text(left: Option<&str>, right: Option<&str>, descending: bool) -> Ordering {
+    match (left, right) {
+        (Some(left), Some(right)) => {
+            let ordering = compare_text(left, right);
+            if descending {
+                ordering.reverse()
+            } else {
+                ordering
+            }
+        }
+        (Some(_), None) => Ordering::Less,
+        (None, Some(_)) => Ordering::Greater,
+        (None, None) => Ordering::Equal,
     }
 }
 
@@ -1082,6 +1179,48 @@ mod tests {
         assert_eq!(entries[0].display_name, "beta");
         assert_eq!(entries[1].display_name, "Alpha.txt");
         assert_eq!(entries[2].display_name, "zeta.txt");
+    }
+
+    #[test]
+    fn metadata_sort_is_deterministic_and_keeps_directories_first() {
+        let directory = entry("folder", FileKind::Directory);
+        let mut small = entry("small.rs", FileKind::Regular);
+        small.size = Some(10);
+        let mut large = entry("large.txt", FileKind::Regular);
+        large.size = Some(20);
+        let unknown = entry("unknown", FileKind::Regular);
+        let mut entries = [unknown, small, directory, large];
+        let descending = SortMode {
+            key: SortKey::Size,
+            descending: true,
+        };
+        entries.sort_by(|left, right| left.compare(right, descending));
+
+        assert_eq!(entries[0].display_name, "folder");
+        assert_eq!(entries[1].display_name, "large.txt");
+        assert_eq!(entries[2].display_name, "small.rs");
+        assert_eq!(entries[3].display_name, "unknown");
+    }
+
+    #[test]
+    fn extension_sort_puts_extensionless_entries_last() {
+        let mut entries = [
+            entry("README", FileKind::Regular),
+            entry("main.rs", FileKind::Regular),
+            entry("notes.md", FileKind::Regular),
+        ];
+        entries.sort_by(|left, right| {
+            left.compare(
+                right,
+                SortMode {
+                    key: SortKey::Extension,
+                    descending: false,
+                },
+            )
+        });
+        assert_eq!(entries[0].display_name, "notes.md");
+        assert_eq!(entries[1].display_name, "main.rs");
+        assert_eq!(entries[2].display_name, "README");
     }
 
     #[test]
