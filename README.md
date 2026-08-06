@@ -16,6 +16,7 @@ PathPilot requires GTK 4.12 or newer, libadwaita 1.5 or newer, and GTK4 VTE.
 - Three live parent/current/preview columns with independently cancelable models.
 - Virtualized `GtkListView` instances populated asynchronously through GIO.
 - Batched GIO enumeration with cancellation and stale-generation rejection.
+- Live current/parent directory monitoring with debounced automatic refresh.
 - Name, native content-type icon, kind, size, and modified-time columns.
 - Case-insensitive name sorting with directories first.
 - `h/j/k/l`, `gg`, and `G` navigation with cursor restoration per directory.
