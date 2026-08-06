@@ -27,6 +27,8 @@ use preview_pane::PreviewPane;
 use tracing::{debug, info, info_span, warn};
 use vte::prelude::*;
 
+const DIRECTORY_MONITOR_DEBOUNCE: Duration = Duration::from_millis(150);
+
 #[derive(Clone)]
 enum PlaceTarget {
     FirstItem,
@@ -92,6 +94,9 @@ struct Browser {
     terminal_running: Cell<bool>,
     terminal_button: RefCell<Option<gtk::ToggleButton>>,
     hidden_button: RefCell<Option<gtk::ToggleButton>>,
+    directory_monitors: RefCell<Vec<gio::FileMonitor>>,
+    monitor_refresh: RefCell<Option<glib::SourceId>>,
+    monitor_generation: Cell<u64>,
     settings: Rc<RefCell<pathpilot_config::Settings>>,
     settings_path: Option<std::path::PathBuf>,
 }
@@ -232,6 +237,9 @@ impl Browser {
             terminal_running: Cell::new(false),
             terminal_button: RefCell::new(None),
             hidden_button: RefCell::new(None),
+            directory_monitors: RefCell::new(Vec::new()),
+            monitor_refresh: RefCell::new(None),
+            monitor_generation: Cell::new(0),
             settings,
             settings_path,
         })
@@ -1492,6 +1500,7 @@ impl Browser {
         restored_position: Option<u32>,
     ) {
         let location = self.navigation.borrow().current().clone();
+        self.start_directory_monitors(&location);
         self.start_git_probe(&location);
         let presentation = present_location(
             &location,
@@ -1537,6 +1546,73 @@ impl Browser {
         }
         self.preview.show_empty();
         info!(location = location.uri(), "navigation started");
+    }
+
+    fn start_directory_monitors(self: &Rc<Self>, location: &Location) {
+        self.stop_directory_monitors();
+        let generation = self.monitor_generation.get().wrapping_add(1);
+        self.monitor_generation.set(generation);
+
+        let current = gio::File::for_uri(location.uri());
+        let mut files = vec![current.clone()];
+        if let Some(parent) = current.parent() {
+            files.push(parent);
+        }
+
+        let mut monitors = self.directory_monitors.borrow_mut();
+        for file in files {
+            match file.monitor_directory(
+                gio::FileMonitorFlags::WATCH_MOVES,
+                None::<&gio::Cancellable>,
+            ) {
+                Ok(monitor) => {
+                    let weak = Rc::downgrade(self);
+                    monitor.connect_changed(move |_, _, _, _| {
+                        if let Some(browser) = weak.upgrade() {
+                            browser.schedule_monitor_refresh(generation);
+                        }
+                    });
+                    monitors.push(monitor);
+                }
+                Err(error) => {
+                    warn!(%error, uri = %file.uri(), "could not monitor directory");
+                }
+            }
+        }
+    }
+
+    fn schedule_monitor_refresh(self: &Rc<Self>, generation: u64) {
+        if generation != self.monitor_generation.get() {
+            return;
+        }
+        if let Some(source) = self.monitor_refresh.borrow_mut().take() {
+            source.remove();
+        }
+        let weak = Rc::downgrade(self);
+        let source = glib::timeout_add_local_once(DIRECTORY_MONITOR_DEBOUNCE, move || {
+            let Some(browser) = weak.upgrade() else {
+                return;
+            };
+            browser.monitor_refresh.borrow_mut().take();
+            if generation != browser.monitor_generation.get() {
+                return;
+            }
+            let preferred = browser.current.selected_entry().map(|entry| entry.location);
+            let position = browser.current.cursor_position();
+            browser.reload_columns(preferred, Some(position));
+        });
+        *self.monitor_refresh.borrow_mut() = Some(source);
+    }
+
+    fn stop_directory_monitors(&self) {
+        self.monitor_generation
+            .set(self.monitor_generation.get().wrapping_add(1));
+        if let Some(source) = self.monitor_refresh.borrow_mut().take() {
+            source.remove();
+        }
+        for monitor in self.directory_monitors.borrow_mut().drain(..) {
+            monitor.cancel();
+        }
     }
 
     fn start_git_probe(self: &Rc<Self>, location: &Location) {
@@ -1588,6 +1664,7 @@ impl Browser {
 
     fn cancel(&self) {
         self.cancel_active_operation();
+        self.stop_directory_monitors();
         self.parent.cancel();
         self.current.cancel();
         self.preview.cancel();

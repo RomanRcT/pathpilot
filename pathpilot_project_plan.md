@@ -15,7 +15,8 @@ The v0.1.x codebase has completed the navigation, preview, file-operation, and
 input foundations described below. It also includes packaged RPM/Flatpak
 artifacts, libadwaita integration, configurable light/dark appearance,
 show/hide hidden files, theme-aware previews with line numbers, embedded
-Neovim, and an embedded shell terminal synchronized with browser navigation.
+Neovim, an embedded shell terminal synchronized with browser navigation, and
+debounced monitoring of the active and parent directories.
 Tabs, general filtering, drag-and-drop, remote GIO workflows, and richer
 document previews remain planned work.
 
