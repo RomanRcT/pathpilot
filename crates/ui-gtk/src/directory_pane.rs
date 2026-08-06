@@ -316,8 +316,7 @@ impl DirectoryPane {
         let current = self.cursor_position();
         self.independent_selection.set(true);
         self.changing_selection.set(true);
-        self.selection
-            .select_item(current, !self.selection.is_selected(current));
+        self.selection.select_item(current, false);
         let next = current.saturating_add(1).min(count - 1);
         self.cursor.set(next);
         self.selection.select_item(next, false);
