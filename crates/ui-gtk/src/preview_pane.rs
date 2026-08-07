@@ -107,9 +107,25 @@ impl PreviewPane {
         let spinner = gtk::Spinner::builder()
             .halign(gtk::Align::Center)
             .valign(gtk::Align::Center)
-            .width_request(48)
-            .height_request(48)
+            .width_request(64)
+            .height_request(64)
+            .visible(true)
             .build();
+        spinner.add_css_class("preview-spinner");
+        let loading_label = gtk::Label::builder()
+            .label("Loading full preview…\nPress Escape to cancel")
+            .justify(gtk::Justification::Center)
+            .halign(gtk::Align::Center)
+            .build();
+        loading_label.add_css_class("dim-label");
+        let loading_page = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .spacing(16)
+            .halign(gtk::Align::Center)
+            .valign(gtk::Align::Center)
+            .build();
+        loading_page.append(&spinner);
+        loading_page.append(&loading_label);
         terminal.set_hexpand(true);
         terminal.set_vexpand(true);
         terminal.set_scrollback_lines(10_000);
@@ -118,7 +134,7 @@ impl PreviewPane {
         stack.add_named(&picture, Some("image"));
         stack.add_named(&directory.widget, Some("directory"));
         stack.add_named(&terminal, Some("editor"));
-        stack.add_named(&spinner, Some("loading"));
+        stack.add_named(&loading_page, Some("loading"));
 
         let title = gtk::Label::builder()
             .label("Preview")
@@ -212,8 +228,9 @@ impl PreviewPane {
             "Full preview — {} · Escape cancels",
             entry.display_name
         ));
-        self.spinner.start();
         self.stack.set_visible_child_name("loading");
+        self.spinner.start();
+        self.spinner.queue_draw();
         self.start(
             entry,
             generation,
