@@ -659,6 +659,7 @@ mod tests {
             content_type: Some("application/x-zerosize".to_owned()),
             is_hidden: false,
             is_symlink: false,
+            archive_format: None,
         };
         let generation = GenerationTracker::default().advance();
         let result = Rc::new(RefCell::new(None));
@@ -690,6 +691,7 @@ mod tests {
             content_type: Some("text/plain".to_owned()),
             is_hidden: false,
             is_symlink: false,
+            archive_format: None,
         };
         let generation = GenerationTracker::default().advance();
         let result = Rc::new(RefCell::new(None));
@@ -751,6 +753,7 @@ mod tests {
             content_type: Some("text/plain".to_owned()),
             is_hidden: false,
             is_symlink: false,
+            archive_format: None,
         };
         let mut changed = first.clone();
         changed.size = Some(2);

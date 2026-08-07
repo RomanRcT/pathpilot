@@ -167,6 +167,11 @@ impl PreviewPane {
 
     pub fn schedule(&self, entry: FileEntry) {
         self.cancel();
+        if entry.archive_format.is_some() {
+            self.metadata.add_css_class("archive-metadata");
+        } else {
+            self.metadata.remove_css_class("archive-metadata");
+        }
         let generation = self.state.gate.borrow_mut().begin();
         if !self.state.has_rendered_content.get() {
             self.metadata
@@ -481,8 +486,14 @@ fn rgba(color: (u8, u8, u8)) -> gdk::RGBA {
 }
 
 fn basic_metadata(entry: &FileEntry, status: &str) -> String {
+    let archive = entry
+        .archive_format
+        .as_ref()
+        .map_or_else(String::new, |format| {
+            format!("\nArchive: {format} — press l to browse contents")
+        });
     format!(
-        "{}\n\nType: {}\nSize: {}\nURI: {}\n\n{status}",
+        "{}\n\nType: {}{archive}\nSize: {}\nURI: {}\n\n{status}",
         entry.display_name,
         entry.content_type.as_deref().unwrap_or("unknown"),
         entry

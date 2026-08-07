@@ -1,6 +1,8 @@
 //! Asynchronous local-directory enumeration through GIO.
 
 use std::{
+    fs::File,
+    io::Read,
     rc::Rc,
     time::{Duration, UNIX_EPOCH},
 };
@@ -132,8 +134,13 @@ fn file_entry(enumerator: &gio::FileEnumerator, info: &gio::FileInfo) -> FileEnt
             .map(|seconds| UNIX_EPOCH + Duration::from_secs(seconds))
     });
 
+    let child = enumerator.child(info);
+    let archive_format = (kind == FileKind::Regular)
+        .then(|| child.path())
+        .flatten()
+        .and_then(|path| detect_archive_signature(&path));
     FileEntry {
-        location: Location::new(enumerator.child(info).uri()),
+        location: Location::new(child.uri()),
         display_name: info.display_name().to_string(),
         kind,
         size: (info.size() >= 0).then_some(info.size() as u64),
@@ -145,7 +152,37 @@ fn file_entry(enumerator: &gio::FileEnumerator, info: &gio::FileInfo) -> FileEnt
         content_type: info.content_type().map(|value| value.to_string()),
         is_hidden: info.is_hidden(),
         is_symlink,
+        archive_format,
     }
+}
+
+/// Cheap content-based recognition for formats supported by the archive backend.
+pub fn detect_archive_signature(path: &std::path::Path) -> Option<String> {
+    let mut file = File::open(path).ok()?;
+    let mut header = [0_u8; 512];
+    let count = file.read(&mut header).ok()?;
+    let bytes = &header[..count];
+    let format = if bytes.starts_with(b"PK\x03\x04")
+        || bytes.starts_with(b"PK\x05\x06")
+        || bytes.starts_with(b"PK\x07\x08")
+    {
+        "zip"
+    } else if bytes.starts_with(b"7z\xBC\xAF\x27\x1C") {
+        "7z"
+    } else if bytes.starts_with(b"Rar!\x1A\x07") {
+        "rar"
+    } else if bytes.starts_with(&[0x1f, 0x8b]) {
+        "gzip"
+    } else if bytes.starts_with(b"BZh") {
+        "bzip2"
+    } else if bytes.starts_with(&[0xfd, b'7', b'z', b'X', b'Z', 0x00]) {
+        "xz"
+    } else if bytes.get(257..262) == Some(b"ustar") {
+        "tar"
+    } else {
+        return None;
+    };
+    Some(format.to_owned())
 }
 
 #[cfg(test)]
@@ -208,5 +245,20 @@ mod tests {
                 entry.display_name == "folder" && entry.kind == FileKind::Directory
             })
         );
+    }
+
+    #[test]
+    fn detects_archives_by_signature_without_using_extension() {
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let disguised_zip = temporary.path().join("payload.data");
+        fs::write(&disguised_zip, b"PK\x03\x04rest").expect("write zip signature");
+        assert_eq!(
+            detect_archive_signature(&disguised_zip).as_deref(),
+            Some("zip")
+        );
+
+        let ordinary = temporary.path().join("archive.zip");
+        fs::write(&ordinary, b"not really an archive").expect("write ordinary file");
+        assert_eq!(detect_archive_signature(&ordinary), None);
     }
 }

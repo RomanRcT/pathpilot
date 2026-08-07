@@ -123,7 +123,7 @@ access to the Flatpak portal service.
 Install the native dependencies:
 
 ```bash
-sudo dnf install rust cargo gtk4-devel libadwaita-devel vte291-gtk4-devel gcc pkgconf-pkg-config neovim
+sudo dnf install rust cargo gtk4-devel libadwaita-devel vte291-gtk4-devel gcc pkgconf-pkg-config neovim 7zip
 ```
 
 Build and run:

@@ -89,6 +89,8 @@ pub struct FileEntry {
     pub content_type: Option<String>,
     pub is_hidden: bool,
     pub is_symlink: bool,
+    /// Archive format detected from the file signature, never from its name.
+    pub archive_format: Option<String>,
 }
 
 impl FileEntry {
@@ -1145,6 +1147,7 @@ mod tests {
             content_type: None,
             is_hidden: false,
             is_symlink: false,
+            archive_format: None,
         }
     }
 

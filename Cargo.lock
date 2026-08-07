@@ -746,6 +746,7 @@ dependencies = [
  "pathpilot-fs-local",
  "pathpilot-operations",
  "pathpilot-preview",
+ "tempfile",
  "tracing",
  "vte4",
 ]

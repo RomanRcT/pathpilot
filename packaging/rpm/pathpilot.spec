@@ -19,6 +19,7 @@ BuildRequires:  pkgconfig(gtk4) >= 4.12
 BuildRequires:  pkgconfig(vte-2.91-gtk4)
 BuildRequires:  rust
 Recommends:     neovim
+Requires:       7zip
 
 %description
 PathPilot is a GTK 4 file manager combining three-column navigation,

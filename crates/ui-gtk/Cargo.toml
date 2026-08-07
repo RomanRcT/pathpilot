@@ -17,3 +17,4 @@ pathpilot-operations.workspace = true
 pathpilot-preview.workspace = true
 tracing.workspace = true
 vte.workspace = true
+tempfile.workspace = true

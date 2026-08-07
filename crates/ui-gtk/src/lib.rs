@@ -1,5 +1,6 @@
 //! GTK composition for three-column local filesystem navigation.
 
+mod archive;
 mod directory_pane;
 mod preview_pane;
 
@@ -12,6 +13,7 @@ use std::{
 };
 
 use adw::prelude::*;
+use archive::{ArchiveOpenEvent, ArchiveOpenHandle, ArchiveSession, copy_to_staging};
 use directory_pane::DirectoryPane;
 use gtk::{gdk, gio, glib};
 use pathpilot_core::{
@@ -101,6 +103,11 @@ struct Browser {
     sort_mode: Cell<SortMode>,
     settings: Rc<RefCell<pathpilot_config::Settings>>,
     settings_path: Option<std::path::PathBuf>,
+    archive_sessions: RefCell<Vec<ArchiveSession>>,
+    retired_archive_sessions: RefCell<Vec<ArchiveSession>>,
+    archive_clipboard_staging: RefCell<Vec<tempfile::TempDir>>,
+    close_after_archive: Cell<bool>,
+    archive_open: RefCell<Option<ArchiveOpenHandle>>,
 }
 
 impl Browser {
@@ -261,6 +268,11 @@ impl Browser {
             sort_mode: Cell::new(sort_mode),
             settings,
             settings_path,
+            archive_sessions: RefCell::new(Vec::new()),
+            retired_archive_sessions: RefCell::new(Vec::new()),
+            archive_clipboard_staging: RefCell::new(Vec::new()),
+            close_after_archive: Cell::new(false),
+            archive_open: RefCell::new(None),
         })
     }
 
@@ -549,7 +561,7 @@ impl Browser {
                     self.open_entry(entry);
                 }
             }
-            AppCommand::GoParent => self.go_parent(),
+            AppCommand::GoParent => self.go_parent(window),
             AppCommand::CreateFile => self.start_create(false),
             AppCommand::CreateDirectory => self.start_create(true),
             AppCommand::Rename => self.start_rename(),
@@ -715,15 +727,66 @@ impl Browser {
         };
         self.status
             .set_label(&format!("NORMAL  {verb}: {} item(s)", entries.len()));
+        let mut clipboard_items: Vec<ClipboardItem> = entries
+            .iter()
+            .map(|entry| ClipboardItem {
+                source: entry.location.clone(),
+                display_name: entry.display_name.clone(),
+            })
+            .collect();
+        let cut_in_archive = action == ClipboardAction::Move
+            && self
+                .archive_sessions
+                .borrow()
+                .last()
+                .is_some_and(|session| {
+                    entries
+                        .iter()
+                        .all(|entry| session.contains(&entry.location))
+                });
+        if cut_in_archive {
+            match copy_to_staging(&entries) {
+                Ok((staging, staged)) => {
+                    clipboard_items = staged
+                        .into_iter()
+                        .map(|(source, display_name)| ClipboardItem {
+                            source,
+                            display_name,
+                        })
+                        .collect();
+                    self.archive_clipboard_staging.borrow_mut().push(staging);
+                    let files = entries
+                        .iter()
+                        .map(|entry| gio::File::for_uri(entry.location.uri()))
+                        .collect::<Vec<_>>();
+                    for file in files {
+                        if let Err(error) = if file.query_file_type(
+                            gio::FileQueryInfoFlags::NOFOLLOW_SYMLINKS,
+                            None::<&gio::Cancellable>,
+                        ) == gio::FileType::Directory
+                        {
+                            remove_local_tree(&file)
+                        } else {
+                            file.delete(None::<&gio::Cancellable>)
+                                .map_err(|error| error.to_string())
+                        } {
+                            self.status
+                                .set_label(&format!("NORMAL  Could not cut archive item: {error}"));
+                            return;
+                        }
+                    }
+                    self.reload_columns(None, Some(self.current.cursor_position()));
+                }
+                Err(error) => {
+                    self.status
+                        .set_label(&format!("NORMAL  Could not stage archive cut: {error}"));
+                    return;
+                }
+            }
+        }
         *self.operation_clipboard.borrow_mut() = Some(OperationClipboard {
             action,
-            items: entries
-                .into_iter()
-                .map(|entry| ClipboardItem {
-                    source: entry.location,
-                    display_name: entry.display_name,
-                })
-                .collect(),
+            items: clipboard_items,
         });
         self.leave_visual();
     }
@@ -867,6 +930,12 @@ impl Browser {
     }
 
     fn cancel_active_operation(&self) -> bool {
+        if let Some(open) = self.archive_open.borrow().as_ref() {
+            open.cancel();
+            self.status
+                .set_label("NORMAL  Cancelling archive extraction…");
+            return true;
+        }
         let active = self.active_operation.borrow();
         let Some(handle) = active.as_ref() else {
             return false;
@@ -1296,6 +1365,54 @@ impl Browser {
             return;
         }
 
+        if entry.archive_format.is_some() {
+            if self.archive_open.borrow().is_some() {
+                self.status
+                    .set_label("NORMAL  Another archive is already being opened");
+                return;
+            }
+            let name = entry.display_name.clone();
+            self.status.set_label(&format!(
+                "NORMAL  Extracting archive {name}… 0% · Escape cancels"
+            ));
+            let (handle, receiver) = ArchiveSession::open_async(entry);
+            *self.archive_open.borrow_mut() = Some(handle);
+            let weak = Rc::downgrade(self);
+            glib::timeout_add_local(Duration::from_millis(50), move || {
+                let Some(browser) = weak.upgrade() else {
+                    return glib::ControlFlow::Break;
+                };
+                let mut finished = None;
+                while let Ok(event) = receiver.try_recv() {
+                    match event {
+                        ArchiveOpenEvent::Progress(progress) => browser.status.set_label(&format!(
+                            "NORMAL  Extracting archive {name}… {progress}% · Escape cancels"
+                        )),
+                        ArchiveOpenEvent::Finished(result) => finished = Some(result),
+                    }
+                }
+                let Some(result) = finished else {
+                    return glib::ControlFlow::Continue;
+                };
+                browser.archive_open.borrow_mut().take();
+                match result {
+                    Ok(session) => {
+                        let root = session.root.clone();
+                        browser.archive_sessions.borrow_mut().push(session);
+                        browser.navigate_to(root, None);
+                    }
+                    Err(error) if error.contains("cancelled") => browser
+                        .status
+                        .set_label("NORMAL  Archive extraction cancelled"),
+                    Err(error) => browser
+                        .status
+                        .set_label(&format!("NORMAL  Could not open archive: {error}")),
+                }
+                glib::ControlFlow::Break
+            });
+            return;
+        }
+
         let uri = entry.location.uri().to_owned();
         let callback_uri = uri.clone();
         gio::AppInfo::launch_default_for_uri_async(
@@ -1525,14 +1642,98 @@ impl Browser {
         dialog.present();
     }
 
-    fn go_parent(self: &Rc<Self>) {
+    fn go_parent(self: &Rc<Self>, window: &adw::ApplicationWindow) {
         let current = self.navigation.borrow().current().clone();
+        let at_archive_root = self
+            .archive_sessions
+            .borrow()
+            .last()
+            .is_some_and(|session| session.root == current);
+        if at_archive_root {
+            self.leave_archive(window);
+            return;
+        }
         let file = gio::File::for_uri(current.uri());
         let Some(parent) = file.parent() else {
             self.status.set_label("NORMAL  Already at filesystem root");
             return;
         };
         self.navigate_to(Location::new(parent.uri()), Some(current));
+    }
+
+    #[allow(deprecated)]
+    fn leave_archive(self: &Rc<Self>, window: &adw::ApplicationWindow) {
+        if self.active_operation.borrow().is_some() {
+            self.status
+                .set_label("NORMAL  Wait for the current archive operation to finish");
+            self.close_after_archive.set(false);
+            return;
+        }
+        let changed = self
+            .archive_sessions
+            .borrow()
+            .last()
+            .is_some_and(ArchiveSession::changed);
+        if !changed {
+            self.finish_leave_archive(false);
+            return;
+        }
+        let name = self
+            .archive_sessions
+            .borrow()
+            .last()
+            .map(|s| s.archive_name.clone())
+            .unwrap_or_default();
+        let dialog = gtk::MessageDialog::builder()
+            .transient_for(window)
+            .modal(true)
+            .message_type(gtk::MessageType::Question)
+            .buttons(gtk::ButtonsType::None)
+            .text(format!("Update archive {name}?"))
+            .secondary_text("The archive contents were changed during this session.")
+            .build();
+        dialog.add_button("Cancel", gtk::ResponseType::Cancel);
+        dialog.add_button("Discard Changes", gtk::ResponseType::Reject);
+        dialog.add_button("Update Archive", gtk::ResponseType::Accept);
+        dialog.set_default_response(gtk::ResponseType::Accept);
+        let weak = Rc::downgrade(self);
+        dialog.connect_response(move |dialog, response| {
+            if let Some(browser) = weak.upgrade() {
+                match response {
+                    gtk::ResponseType::Accept => browser.finish_leave_archive(true),
+                    gtk::ResponseType::Reject => browser.finish_leave_archive(false),
+                    _ => browser.close_after_archive.set(false),
+                }
+            }
+            dialog.close();
+        });
+        dialog.present();
+    }
+
+    fn finish_leave_archive(self: &Rc<Self>, save: bool) {
+        let Some(session) = self.archive_sessions.borrow_mut().pop() else {
+            return;
+        };
+        if save && let Err(error) = session.save() {
+            self.status
+                .set_label(&format!("NORMAL  Could not update archive: {error}"));
+            self.archive_sessions.borrow_mut().push(session);
+            return;
+        }
+        let archive = session.archive.clone();
+        let parent = gio::File::for_uri(archive.uri()).parent();
+        self.retired_archive_sessions.borrow_mut().push(session);
+        if let Some(parent) = parent {
+            self.navigate_to(Location::new(parent.uri()), Some(archive));
+        }
+        if self.close_after_archive.get()
+            && let Some(window) = self
+                .location_label
+                .root()
+                .and_downcast::<adw::ApplicationWindow>()
+        {
+            glib::idle_add_local_once(move || window.close());
+        }
     }
 
     fn navigate_to(self: &Rc<Self>, location: Location, preferred: Option<Location>) {
@@ -1564,6 +1765,26 @@ impl Browser {
                 .map(std::path::Path::new),
         );
         self.location_label.set_label(&presentation.compact);
+        if let Some(session) = self.archive_sessions.borrow().last() {
+            self.location_label.add_css_class("archive-location");
+            let relative = gio::File::for_uri(location.uri())
+                .path()
+                .and_then(|path| {
+                    path.strip_prefix(&session.root_path)
+                        .ok()
+                        .map(std::path::Path::to_path_buf)
+                })
+                .unwrap_or_default();
+            let suffix = if relative.as_os_str().is_empty() {
+                String::new()
+            } else {
+                format!(" / {}", relative.display())
+            };
+            self.location_label
+                .set_label(&format!("ARCHIVE: {}{suffix}", session.archive_name));
+        } else {
+            self.location_label.remove_css_class("archive-location");
+        }
         self.location_label.set_tooltip_text(Some(location.uri()));
         self.status.set_label("NORMAL  Loading…");
 
@@ -1889,6 +2110,11 @@ pub fn build_window(app: &adw::Application) -> adw::ApplicationWindow {
     let close_browser = browser.clone();
     let close_window = window.clone();
     window.connect_close_request(move |_| {
+        if !close_browser.archive_sessions.borrow().is_empty() {
+            close_browser.close_after_archive.set(true);
+            close_browser.leave_archive(&close_window);
+            return glib::Propagation::Stop;
+        }
         close_browser.persist_window_state(&close_window);
         close_browser.cancel();
         glib::Propagation::Proceed
@@ -2540,6 +2766,13 @@ fn selection_summary(entries: &[FileEntry]) -> String {
     names
 }
 
+fn remove_local_tree(file: &gio::File) -> Result<(), String> {
+    let path = file
+        .path()
+        .ok_or_else(|| "Archive item is not local".to_owned())?;
+    std::fs::remove_dir_all(path).map_err(|error| error.to_string())
+}
+
 fn compact_metadata(entry: &FileEntry) -> String {
     let kind = match entry.kind {
         FileKind::Directory => "Folder",
@@ -2619,7 +2852,7 @@ fn format_permissions(mode: u32) -> String {
 fn install_hint_css() {
     let provider = gtk::CssProvider::new();
     provider.load_from_string(
-        ".interaction-panel-content { background-color: @window_bg_color; border-top: 1px solid alpha(@window_fg_color, 0.16); padding: 10px 16px; } .key-hint-key { font-family: monospace; font-weight: bold; color: @accent_color; } .status-line { padding: 7px 10px; font-family: 'Symbols Nerd Font Mono', 'JetBrainsMono Nerd Font', 'Noto Sans Mono', monospace; } .git-status { font-weight: bold; } .status-normal { background: #42566a; color: #f4f7fa; } .status-visual { background: #8a752e; color: #fff8dc; } .status-find { background: #376b5b; color: #f1fff9; } .status-command { background: #604c7a; color: #faf5ff; } .status-input { background: #496278; color: #f4f8ff; } .status-edit { background: #654c3d; color: #fff7ed; }",
+        ".interaction-panel-content { background-color: @window_bg_color; border-top: 1px solid alpha(@window_fg_color, 0.16); padding: 10px 16px; } .key-hint-key { font-family: monospace; font-weight: bold; color: @accent_color; } .archive-metadata { color: @accent_color; font-weight: bold; } .archive-location { color: @accent_color; font-weight: bold; } .status-line { padding: 7px 10px; font-family: 'Symbols Nerd Font Mono', 'JetBrainsMono Nerd Font', 'Noto Sans Mono', monospace; } .git-status { font-weight: bold; } .status-normal { background: #42566a; color: #f4f7fa; } .status-visual { background: #8a752e; color: #fff8dc; } .status-find { background: #376b5b; color: #f1fff9; } .status-command { background: #604c7a; color: #faf5ff; } .status-input { background: #496278; color: #f4f8ff; } .status-edit { background: #654c3d; color: #fff7ed; }",
     );
     if let Some(display) = gdk::Display::default() {
         gtk::style_context_add_provider_for_display(
