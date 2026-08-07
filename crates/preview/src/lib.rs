@@ -244,10 +244,37 @@ fn load_text(
 ) {
     let file = gio::File::for_uri(entry.location.uri());
     let display_name = entry.display_name.clone();
-    let entry_size_limit = entry
-        .size
-        .and_then(|size| usize::try_from(size).ok())
-        .unwrap_or(limits.max_text_bytes);
+    if mode == PreviewMode::Full {
+        let full_cancellable = cancellable.clone();
+        file.load_contents_async(Some(cancellable), move |result| match result {
+            Ok((bytes, _)) => {
+                if bytes.contains(&0) {
+                    on_result(PreviewResult {
+                        generation,
+                        content: Err("Binary data cannot be shown as text".to_owned()),
+                    });
+                    return;
+                }
+                highlight_async(
+                    String::from_utf8_lossy(&bytes).into_owned(),
+                    false,
+                    display_name,
+                    generation,
+                    dark,
+                    &full_cancellable,
+                    on_result,
+                );
+            }
+            Err(error) if error.matches(gio::IOErrorEnum::Cancelled) => {
+                debug!(
+                    generation = generation.value(),
+                    "full text preview cancelled"
+                );
+            }
+            Err(error) => publish_error(generation, error, &on_result),
+        });
+        return;
+    }
     let callback_cancellable = cancellable.clone();
     file.read_async(
         glib::Priority::LOW,
@@ -255,10 +282,7 @@ fn load_text(
         move |result| match result {
             Ok(stream) => {
                 let highlight_cancellable = callback_cancellable.clone();
-                let byte_limit = match mode {
-                    PreviewMode::Automatic => limits.max_text_bytes,
-                    PreviewMode::Full => entry_size_limit,
-                };
+                let byte_limit = limits.max_text_bytes;
                 stream.read_bytes_async(
                     byte_limit.saturating_add(1),
                     glib::Priority::LOW,
@@ -275,8 +299,7 @@ fn load_text(
                             }
                             let truncated = bytes.len() > byte_limit;
                             let visible = &bytes[..bytes.len().min(byte_limit)];
-                            let rich = mode == PreviewMode::Full
-                                || visible.len() <= limits.max_rich_text_bytes;
+                            let rich = visible.len() <= limits.max_rich_text_bytes;
                             if !rich {
                                 on_result(PreviewResult {
                                     generation,
@@ -820,6 +843,52 @@ mod tests {
             result.borrow_mut().take().unwrap().content,
             Ok(PreviewContent::Text(_))
         ));
+    }
+
+    #[test]
+    fn full_preview_reads_through_end_of_large_file() {
+        let _guard = async_test_guard();
+        let temporary = tempfile::tempdir().expect("create temporary directory");
+        let path = temporary.path().join("large.txt");
+        let source = format!("{}END-MARKER", "line of text\n".repeat(50_000));
+        fs::write(&path, &source).expect("write preview fixture");
+        let entry = FileEntry {
+            location: Location::new(gio::File::for_path(path).uri()),
+            display_name: "large.txt".to_owned(),
+            kind: FileKind::Regular,
+            size: Some(source.len() as u64),
+            modified: None,
+            unix_mode: None,
+            content_type: Some("text/plain".to_owned()),
+            is_hidden: false,
+            is_symlink: false,
+            archive_format: None,
+        };
+        let generation = GenerationTracker::default().advance();
+        let result = Rc::new(RefCell::new(None));
+        let main_loop = glib::MainLoop::new(None, false);
+        let _cancellable = load_preview(
+            &entry,
+            generation,
+            PreviewLimits::default(),
+            false,
+            PreviewMode::Full,
+            {
+                let result = result.clone();
+                let main_loop = main_loop.clone();
+                move |preview| {
+                    *result.borrow_mut() = Some(preview);
+                    main_loop.quit();
+                }
+            },
+        );
+        main_loop.run();
+        let result = result.borrow_mut().take().unwrap().content.unwrap();
+        let PreviewContent::StyledText(preview) = result else {
+            panic!("expected styled full preview");
+        };
+        assert!(preview.text.ends_with("END-MARKER"));
+        assert!(!preview.truncated);
     }
 
     #[test]
