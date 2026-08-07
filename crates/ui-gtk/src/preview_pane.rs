@@ -401,10 +401,11 @@ impl PreviewPane {
                 buffer.tag_table().add(&tag);
                 tag
             });
-            buffer.apply_tag(
+            self.apply_tag_safely(
+                &buffer,
                 tag,
-                &buffer.iter_at_offset(self.preview_offset(&source, span.start, false)),
-                &buffer.iter_at_offset(self.preview_offset(&source, span.end, true)),
+                self.preview_offset(&source, span.start, false),
+                self.preview_offset(&source, span.end, true),
             );
         }
         self.apply_line_number_style(&buffer, &source);
@@ -461,10 +462,11 @@ impl PreviewPane {
                     .build(),
             };
             buffer.tag_table().add(&tag);
-            buffer.apply_tag(
+            self.apply_tag_safely(
+                &buffer,
                 &tag,
-                &buffer.iter_at_offset(self.preview_offset(&source, span.start, false)),
-                &buffer.iter_at_offset(self.preview_offset(&source, span.end, true)),
+                self.preview_offset(&source, span.start, false),
+                self.preview_offset(&source, span.end, true),
             );
         }
         self.apply_line_number_style(&buffer, &source);
@@ -502,13 +504,28 @@ impl PreviewPane {
         let prefix = line_number_width(text) + 3;
         let mut position = 0_usize;
         for line in text.split_inclusive('\n') {
-            buffer.apply_tag(
+            self.apply_tag_safely(
+                buffer,
                 &tag,
-                &buffer.iter_at_offset(position as i32),
-                &buffer.iter_at_offset(position.saturating_add(prefix) as i32),
+                i32::try_from(position).unwrap_or(i32::MAX),
+                i32::try_from(position.saturating_add(prefix)).unwrap_or(i32::MAX),
             );
             position = position.saturating_add(prefix + line.chars().count());
         }
+    }
+
+    fn apply_tag_safely(&self, buffer: &gtk::TextBuffer, tag: &gtk::TextTag, start: i32, end: i32) {
+        let character_count = buffer.char_count().max(0);
+        let start = start.clamp(0, character_count);
+        let end = end.clamp(0, character_count);
+        if start >= end {
+            return;
+        }
+        buffer.apply_tag(
+            tag,
+            &buffer.iter_at_offset(start),
+            &buffer.iter_at_offset(end),
+        );
     }
 }
 
@@ -575,5 +592,18 @@ mod tests {
         assert_eq!(numbered_offset(source, 0, false), 4);
         assert_eq!(numbered_offset(source, 2, true), 6);
         assert_eq!(numbered_offset(source, 2, false), 10);
+    }
+
+    #[test]
+    fn numbered_offsets_stay_inside_unicode_display_text() {
+        let source = "αβ\n🙂 text\nlast";
+        let displayed = add_line_numbers(source);
+        let character_count = displayed.chars().count() as i32;
+        for offset in 0..=source.chars().count() as i32 {
+            for at_end in [false, true] {
+                let mapped = numbered_offset(source, offset, at_end);
+                assert!((0..=character_count).contains(&mapped));
+            }
+        }
     }
 }
