@@ -17,7 +17,8 @@ use vte::prelude::*;
 use crate::directory_pane::DirectoryPane;
 
 const PREVIEW_DELAY: Duration = Duration::from_millis(75);
-const MAX_GTK_STYLE_SPANS: usize = 2_000;
+const MAX_GTK_STYLE_SPANS: usize = 8_000;
+const MAX_GTK_LINE_NUMBER_TAGS: usize = 2_000;
 
 struct PreviewState {
     gate: RefCell<PreviewGate>,
@@ -310,7 +311,10 @@ impl PreviewPane {
                 pane.render(&render_entry, result);
                 state.loading.set(false);
                 pane.spinner.stop();
-                pane.title.set_label("Preview");
+                pane.title.set_label(match mode {
+                    PreviewMode::Automatic => "Preview",
+                    PreviewMode::Full => "Full preview",
+                });
                 if let Some(on_finished) = on_finished.as_ref() {
                     on_finished(success);
                 }
@@ -348,7 +352,7 @@ impl PreviewPane {
                 self.stack.set_visible_child_name("text");
             }
             Ok(PreviewContent::StyledText(preview)) => {
-                self.render_styled_text(preview);
+                self.render_styled_text(entry, preview);
                 self.stack.set_visible_child_name("text");
             }
             Ok(PreviewContent::Markdown(preview)) => {
@@ -373,21 +377,26 @@ impl PreviewPane {
         }
     }
 
-    fn render_styled_text(&self, preview: StyledTextPreview) {
+    fn render_styled_text(&self, entry: &FileEntry, preview: StyledTextPreview) {
         if preview.spans.len() > MAX_GTK_STYLE_SPANS {
             let source_char_count = preview.text.chars().count();
             let span_count = preview.spans.len();
-            let suffix = if preview.truncated {
-                "\n\n[Preview truncated · syntax styling omitted for stability]"
+            let banner = if preview.truncated {
+                format!(
+                    "[FULL PREVIEW TRUNCATED · {source_char_count} characters · syntax colors omitted for stability]\n\n"
+                )
             } else {
-                "\n\n[Full content · syntax styling omitted for stability]"
+                format!(
+                    "[FULL PREVIEW · complete file · {source_char_count} characters · syntax colors omitted for stability]\n\n"
+                )
             };
-            let source = format!("{}{suffix}", preview.text);
+            let source = format!("{banner}{}", preview.text);
             let buffer = gtk::TextBuffer::new(None);
             buffer.set_text(&self.display_text(&source));
             self.apply_line_number_style(&buffer, &source);
             self.text.set_buffer(Some(&buffer));
             info!(
+                file = entry.display_name,
                 source_chars = source_char_count,
                 buffer_chars = buffer.char_count(),
                 span_count,
@@ -441,6 +450,7 @@ impl PreviewPane {
         self.apply_line_number_style(&buffer, &source);
         self.text.set_buffer(Some(&buffer));
         info!(
+            file = entry.display_name,
             source_chars = source.chars().count(),
             buffer_chars = buffer.char_count(),
             "styled preview buffer installed"
@@ -525,7 +535,7 @@ impl PreviewPane {
     }
 
     fn apply_line_number_style(&self, buffer: &gtk::TextBuffer, text: &str) {
-        if !self.show_line_numbers || text.lines().count() > MAX_GTK_STYLE_SPANS {
+        if !self.show_line_numbers || text.lines().count() > MAX_GTK_LINE_NUMBER_TAGS {
             return;
         }
         let tag = gtk::TextTag::builder()
