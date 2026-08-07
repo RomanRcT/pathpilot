@@ -577,6 +577,7 @@ impl Browser {
             AppCommand::Paste => self.paste_operation_clipboard(window),
             AppCommand::ToggleVisual => self.toggle_visual(),
             AppCommand::CycleLayout => self.cycle_pane_layout(),
+            AppCommand::FullPreview => self.load_full_preview(),
             AppCommand::Quit => unreachable!("quit handled before navigation dispatch"),
         }
         false
@@ -626,6 +627,30 @@ impl Browser {
         }
         self.status
             .set_label(&format!("NORMAL  Layout: {}", layout.label()));
+    }
+
+    fn load_full_preview(&self) {
+        let Some(entry) = self.current.selected_entry() else {
+            self.status.set_label("NORMAL  Nothing selected");
+            return;
+        };
+        if entry.kind == FileKind::Directory {
+            self.status
+                .set_label("NORMAL  Full preview is only available for files");
+            return;
+        }
+        self.status
+            .set_label("NORMAL  Loading full preview… · Escape cancels");
+        let weak = self.status.downgrade();
+        self.preview.schedule_full(entry, move |success| {
+            if let Some(status) = weak.upgrade() {
+                status.set_label(if success {
+                    "NORMAL  Full preview loaded"
+                } else {
+                    "NORMAL  Full preview failed"
+                });
+            }
+        });
     }
 
     fn restore_pane_layout(&self) {
@@ -2353,6 +2378,15 @@ fn install_keyboard_controller(
                 .upgrade()
                 .is_some_and(|browser| browser.cancel_active_operation())
             {
+                return glib::Propagation::Stop;
+            }
+            if browser
+                .upgrade()
+                .is_some_and(|browser| browser.preview.cancel_loading())
+            {
+                if let Some(browser) = browser.upgrade() {
+                    browser.status.set_label("NORMAL  Full preview cancelled");
+                }
                 return glib::Propagation::Stop;
             }
             parser.borrow_mut().reset();

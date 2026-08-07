@@ -9,7 +9,7 @@ use gtk::{gdk, gio, glib, prelude::*};
 use pathpilot_core::{FileEntry, FileKind, Generation, SortMode};
 use pathpilot_preview::{
     MarkdownPreview, MarkdownStyle, PreviewCache, PreviewContent, PreviewGate, PreviewLimits,
-    PreviewResult, StyledTextPreview, load_preview,
+    PreviewMode, PreviewResult, StyledTextPreview, load_preview,
 };
 use tracing::debug;
 use vte::prelude::*;
@@ -24,6 +24,7 @@ struct PreviewState {
     cancellable: RefCell<Option<gio::Cancellable>>,
     cache: RefCell<PreviewCache>,
     has_rendered_content: Cell<bool>,
+    loading: Cell<bool>,
 }
 
 impl Default for PreviewState {
@@ -34,6 +35,7 @@ impl Default for PreviewState {
             cancellable: RefCell::new(None),
             cache: RefCell::new(PreviewCache::new(24)),
             has_rendered_content: Cell::new(false),
+            loading: Cell::new(false),
         }
     }
 }
@@ -48,6 +50,7 @@ pub struct PreviewPane {
     metadata: gtk::Label,
     text: gtk::TextView,
     picture: gtk::Picture,
+    spinner: gtk::Spinner,
     show_line_numbers: bool,
     state: Rc<PreviewState>,
 }
@@ -99,6 +102,12 @@ impl PreviewPane {
             .transition_duration(100)
             .build();
         let terminal = vte::Terminal::new();
+        let spinner = gtk::Spinner::builder()
+            .halign(gtk::Align::Center)
+            .valign(gtk::Align::Center)
+            .width_request(48)
+            .height_request(48)
+            .build();
         terminal.set_hexpand(true);
         terminal.set_vexpand(true);
         terminal.set_scrollback_lines(10_000);
@@ -107,6 +116,7 @@ impl PreviewPane {
         stack.add_named(&picture, Some("image"));
         stack.add_named(&directory.widget, Some("directory"));
         stack.add_named(&terminal, Some("editor"));
+        stack.add_named(&spinner, Some("loading"));
 
         let title = gtk::Label::builder()
             .label("Preview")
@@ -131,6 +141,7 @@ impl PreviewPane {
             metadata,
             text,
             picture,
+            spinner,
             show_line_numbers,
             state: Rc::new(PreviewState::default()),
         }
@@ -167,6 +178,7 @@ impl PreviewPane {
 
     pub fn schedule(&self, entry: FileEntry) {
         self.cancel();
+        self.title.set_label("Preview");
         if entry.archive_format.is_some() {
             self.metadata.add_css_class("archive-metadata");
         } else {
@@ -184,14 +196,44 @@ impl PreviewPane {
         let source = glib::timeout_add_local_once(PREVIEW_DELAY, move || {
             state.delay.borrow_mut().take();
             if state.gate.borrow().accepts(generation) {
-                pane.start(entry, generation);
+                pane.start(entry, generation, PreviewMode::Automatic, None);
             }
         });
         *self.state.delay.borrow_mut() = Some(source);
     }
 
+    pub fn schedule_full(&self, entry: FileEntry, on_finished: impl Fn(bool) + 'static) {
+        self.cancel();
+        let generation = self.state.gate.borrow_mut().begin();
+        self.state.loading.set(true);
+        self.title.set_label(&format!(
+            "Full preview — {} · Escape cancels",
+            entry.display_name
+        ));
+        self.spinner.start();
+        self.stack.set_visible_child_name("loading");
+        self.start(
+            entry,
+            generation,
+            PreviewMode::Full,
+            Some(Rc::new(on_finished)),
+        );
+    }
+
+    pub fn cancel_loading(&self) -> bool {
+        if !self.state.loading.get() {
+            return false;
+        }
+        self.cancel();
+        self.title.set_label("Preview");
+        self.metadata.set_label("Full preview cancelled");
+        self.stack.set_visible_child_name("metadata");
+        true
+    }
+
     pub fn show_empty(&self) {
         self.cancel();
+        self.title.set_label("Preview");
         self.state.has_rendered_content.set(false);
         self.metadata.set_label("No selection");
         self.stack.set_visible_child_name("metadata");
@@ -206,9 +248,17 @@ impl PreviewPane {
             cancellable.cancel();
         }
         self.directory.cancel();
+        self.state.loading.set(false);
+        self.spinner.stop();
     }
 
-    fn start(&self, entry: FileEntry, generation: Generation) {
+    fn start(
+        &self,
+        entry: FileEntry,
+        generation: Generation,
+        mode: PreviewMode,
+        on_finished: Option<Rc<dyn Fn(bool)>>,
+    ) {
         if entry.kind == FileKind::Directory {
             self.state.has_rendered_content.set(true);
             self.stack.set_visible_child_name("directory");
@@ -216,7 +266,9 @@ impl PreviewPane {
             return;
         }
 
-        if let Some(content) = self.state.cache.borrow_mut().get(&entry) {
+        if mode == PreviewMode::Automatic
+            && let Some(content) = self.state.cache.borrow_mut().get(&entry)
+        {
             self.render(
                 &entry,
                 PreviewResult {
@@ -235,6 +287,7 @@ impl PreviewPane {
             generation,
             PreviewLimits::default(),
             adw::StyleManager::default().is_dark(),
+            mode,
             move |result| {
                 state.cancellable.borrow_mut().take();
                 if !state.gate.borrow().accepts(result.generation) {
@@ -244,7 +297,15 @@ impl PreviewPane {
                     );
                     return;
                 }
-                if let Ok(content) = &result.content {
+                if let Some(on_finished) = on_finished.as_ref() {
+                    on_finished(result.content.is_ok());
+                }
+                state.loading.set(false);
+                pane.spinner.stop();
+                pane.title.set_label("Preview");
+                if mode == PreviewMode::Automatic
+                    && let Ok(content) = &result.content
+                {
                     state
                         .cache
                         .borrow_mut()
@@ -267,9 +328,9 @@ impl PreviewPane {
                     return;
                 }
                 let suffix = if preview.truncated {
-                    "\n\n[Preview truncated]"
+                    "\n\n[Fast plain-text preview truncated · Press P for full preview]"
                 } else {
-                    ""
+                    "\n\n[Fast plain-text preview · Press P for full syntax preview]"
                 };
                 let source = format!("{}{suffix}", preview.text);
                 let buffer = self.text.buffer();

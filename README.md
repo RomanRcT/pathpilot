@@ -75,6 +75,7 @@ directory and `h` to return to its parent.
 | `Space` | Toggle current selection |
 | `s n/e/z/m` / `s r` | Sort by name/extension/size/modified time / reverse |
 | `z` | Cycle pane layout |
+| `P` / `Escape` | Load full syntax preview / cancel loading |
 | `e` | Edit a local text file in embedded Neovim |
 | `:` / `F1` | Command palette / command reference |
 

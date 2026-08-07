@@ -254,6 +254,7 @@ fn command(name: &str) -> Option<AppCommand> {
         "paste" => AppCommand::Paste,
         "visual" => AppCommand::ToggleVisual,
         "cycle_layout" => AppCommand::CycleLayout,
+        "full_preview" => AppCommand::FullPreview,
         _ => return None,
     })
 }
@@ -280,6 +281,7 @@ fn label(command: AppCommand) -> &'static str {
         AppCommand::Paste => "Paste",
         AppCommand::ToggleVisual => "Visual selection",
         AppCommand::CycleLayout => "Cycle pane layout",
+        AppCommand::FullPreview => "Full preview",
     }
 }
 

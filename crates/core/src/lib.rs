@@ -718,6 +718,7 @@ pub enum AppCommand {
     Paste,
     ToggleVisual,
     CycleLayout,
+    FullPreview,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -817,6 +818,11 @@ pub const PALETTE_COMMANDS: &[PaletteCommand] = &[
         command: AppCommand::CycleLayout,
         title: "Cycle pane layout",
         keys: "z",
+    },
+    PaletteCommand {
+        command: AppCommand::FullPreview,
+        title: "Load full syntax preview",
+        keys: "P",
     },
     PaletteCommand {
         command: AppCommand::GoParent,
@@ -1116,6 +1122,7 @@ fn default_key_bindings() -> Vec<KeyBinding> {
         ("p", AppCommand::Paste, "paste"),
         ("v", AppCommand::ToggleVisual, "visual selection"),
         ("z", AppCommand::CycleLayout, "cycle pane layout"),
+        ("P", AppCommand::FullPreview, "full preview"),
         ("G", AppCommand::GoLast, "last item"),
         ("gg", AppCommand::GoFirst, "first item"),
         ("af", AppCommand::CreateFile, "create file"),

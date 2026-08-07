@@ -14,6 +14,7 @@ use tracing::{debug, warn};
 #[derive(Clone, Copy, Debug)]
 pub struct PreviewLimits {
     pub max_text_bytes: usize,
+    pub max_rich_text_bytes: usize,
     pub image_width: i32,
     pub image_height: i32,
 }
@@ -21,11 +22,19 @@ pub struct PreviewLimits {
 impl Default for PreviewLimits {
     fn default() -> Self {
         Self {
-            max_text_bytes: 1024 * 1024,
+            max_text_bytes: 256 * 1024,
+            max_rich_text_bytes: 24 * 1024,
             image_width: 1200,
             image_height: 1200,
         }
     }
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum PreviewMode {
+    #[default]
+    Automatic,
+    Full,
 }
 
 #[derive(Clone, Debug)]
@@ -187,6 +196,7 @@ pub fn load_preview(
     generation: Generation,
     limits: PreviewLimits,
     dark: bool,
+    mode: PreviewMode,
     on_result: impl Fn(PreviewResult) + 'static,
 ) -> gio::Cancellable {
     let cancellable = gio::Cancellable::new();
@@ -204,7 +214,15 @@ pub fn load_preview(
     } else if content_type.starts_with("image/") {
         load_image(entry, generation, limits, &cancellable, on_result);
     } else if is_text_content_type(content_type) {
-        load_text(entry, generation, limits, dark, &cancellable, on_result);
+        load_text(
+            entry,
+            generation,
+            limits,
+            dark,
+            mode,
+            &cancellable,
+            on_result,
+        );
     } else {
         on_result(PreviewResult {
             generation,
@@ -220,11 +238,16 @@ fn load_text(
     generation: Generation,
     limits: PreviewLimits,
     dark: bool,
+    mode: PreviewMode,
     cancellable: &gio::Cancellable,
     on_result: Rc<dyn Fn(PreviewResult)>,
 ) {
     let file = gio::File::for_uri(entry.location.uri());
     let display_name = entry.display_name.clone();
+    let entry_size_limit = entry
+        .size
+        .and_then(|size| usize::try_from(size).ok())
+        .unwrap_or(limits.max_text_bytes);
     let callback_cancellable = cancellable.clone();
     file.read_async(
         glib::Priority::LOW,
@@ -232,8 +255,12 @@ fn load_text(
         move |result| match result {
             Ok(stream) => {
                 let highlight_cancellable = callback_cancellable.clone();
+                let byte_limit = match mode {
+                    PreviewMode::Automatic => limits.max_text_bytes,
+                    PreviewMode::Full => entry_size_limit,
+                };
                 stream.read_bytes_async(
-                    limits.max_text_bytes.saturating_add(1),
+                    byte_limit.saturating_add(1),
                     glib::Priority::LOW,
                     Some(&callback_cancellable),
                     move |result| match result {
@@ -246,8 +273,20 @@ fn load_text(
                                 });
                                 return;
                             }
-                            let truncated = bytes.len() > limits.max_text_bytes;
-                            let visible = &bytes[..bytes.len().min(limits.max_text_bytes)];
+                            let truncated = bytes.len() > byte_limit;
+                            let visible = &bytes[..bytes.len().min(byte_limit)];
+                            let rich = mode == PreviewMode::Full
+                                || visible.len() <= limits.max_rich_text_bytes;
+                            if !rich {
+                                on_result(PreviewResult {
+                                    generation,
+                                    content: Ok(PreviewContent::Text(TextPreview {
+                                        text: String::from_utf8_lossy(visible).into_owned(),
+                                        truncated,
+                                    })),
+                                });
+                                return;
+                            }
                             highlight_async(
                                 String::from_utf8_lossy(visible).into_owned(),
                                 truncated,
@@ -622,10 +661,15 @@ fn is_text_content_type(content_type: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use std::{cell::RefCell, fs, rc::Rc};
+    use std::{cell::RefCell, fs, rc::Rc, sync::Mutex};
 
     use super::*;
     use pathpilot_core::{FileKind, GenerationTracker, Location};
+
+    fn async_test_guard() -> std::sync::MutexGuard<'static, ()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(())).lock().unwrap()
+    }
 
     #[test]
     fn stale_preview_results_are_rejected() {
@@ -649,6 +693,7 @@ mod tests {
 
     #[test]
     fn empty_file_has_an_empty_text_preview_regardless_of_mime_type() {
+        let _guard = async_test_guard();
         let entry = FileEntry {
             location: Location::new("file:///tmp/empty"),
             display_name: "empty".to_owned(),
@@ -663,10 +708,17 @@ mod tests {
         };
         let generation = GenerationTracker::default().advance();
         let result = Rc::new(RefCell::new(None));
-        let _cancellable = load_preview(&entry, generation, PreviewLimits::default(), false, {
-            let result = result.clone();
-            move |preview| *result.borrow_mut() = Some(preview)
-        });
+        let _cancellable = load_preview(
+            &entry,
+            generation,
+            PreviewLimits::default(),
+            false,
+            PreviewMode::Automatic,
+            {
+                let result = result.clone();
+                move |preview| *result.borrow_mut() = Some(preview)
+            },
+        );
 
         let result = result.borrow_mut().take().expect("preview completes");
         let PreviewContent::Text(preview) = result.content.expect("preview succeeds") else {
@@ -678,6 +730,7 @@ mod tests {
 
     #[test]
     fn text_preview_is_bounded_and_reports_truncation() {
+        let _guard = async_test_guard();
         let temporary = tempfile::tempdir().expect("create temporary directory");
         let path = temporary.path().join("sample.txt");
         fs::write(&path, b"abcdef").expect("write preview fixture");
@@ -704,6 +757,7 @@ mod tests {
                 ..PreviewLimits::default()
             },
             false,
+            PreviewMode::Automatic,
             {
                 let result = result.clone();
                 let main_loop = main_loop.clone();
@@ -722,6 +776,50 @@ mod tests {
         };
         assert_eq!(preview.text, "abcd");
         assert!(preview.truncated);
+    }
+
+    #[test]
+    fn large_source_uses_fast_plain_text_in_automatic_mode() {
+        let _guard = async_test_guard();
+        let temporary = tempfile::tempdir().expect("create temporary directory");
+        let path = temporary.path().join("large.html");
+        let source = format!("<html>{}</html>", "<div>content</div>".repeat(3_000));
+        fs::write(&path, &source).expect("write preview fixture");
+        let entry = FileEntry {
+            location: Location::new(gio::File::for_path(path).uri()),
+            display_name: "large.html".to_owned(),
+            kind: FileKind::Regular,
+            size: Some(source.len() as u64),
+            modified: None,
+            unix_mode: None,
+            content_type: Some("text/html".to_owned()),
+            is_hidden: false,
+            is_symlink: false,
+            archive_format: None,
+        };
+        let generation = GenerationTracker::default().advance();
+        let result = Rc::new(RefCell::new(None));
+        let main_loop = glib::MainLoop::new(None, false);
+        let _cancellable = load_preview(
+            &entry,
+            generation,
+            PreviewLimits::default(),
+            false,
+            PreviewMode::Automatic,
+            {
+                let result = result.clone();
+                let main_loop = main_loop.clone();
+                move |preview| {
+                    *result.borrow_mut() = Some(preview);
+                    main_loop.quit();
+                }
+            },
+        );
+        main_loop.run();
+        assert!(matches!(
+            result.borrow_mut().take().unwrap().content,
+            Ok(PreviewContent::Text(_))
+        ));
     }
 
     #[test]
