@@ -822,7 +822,7 @@ pub const PALETTE_COMMANDS: &[PaletteCommand] = &[
     PaletteCommand {
         command: AppCommand::FullPreview,
         title: "Load full syntax preview",
-        keys: "F",
+        keys: "u",
     },
     PaletteCommand {
         command: AppCommand::GoParent,
@@ -1122,7 +1122,7 @@ fn default_key_bindings() -> Vec<KeyBinding> {
         ("p", AppCommand::Paste, "paste"),
         ("v", AppCommand::ToggleVisual, "visual selection"),
         ("z", AppCommand::CycleLayout, "cycle pane layout"),
-        ("F", AppCommand::FullPreview, "full preview"),
+        ("u", AppCommand::FullPreview, "full preview"),
         ("G", AppCommand::GoLast, "last item"),
         ("gg", AppCommand::GoFirst, "first item"),
         ("af", AppCommand::CreateFile, "create file"),
@@ -1281,6 +1281,10 @@ mod tests {
         assert_eq!(parser.feed('q', now), KeyResult::Command(AppCommand::Quit));
         assert_eq!(parser.feed('x', now), KeyResult::Command(AppCommand::Cut));
         assert_eq!(parser.feed('p', now), KeyResult::Command(AppCommand::Paste));
+        assert_eq!(
+            parser.feed('u', now),
+            KeyResult::Command(AppCommand::FullPreview)
+        );
         assert_eq!(
             parser.feed('v', now),
             KeyResult::Command(AppCommand::ToggleVisual)
