@@ -333,9 +333,10 @@ impl PreviewPane {
                     "\n\n[Fast plain-text preview · Press u for full syntax preview]"
                 };
                 let source = format!("{}{suffix}", preview.text);
-                let buffer = self.text.buffer();
+                let buffer = gtk::TextBuffer::new(None);
                 buffer.set_text(&self.display_text(&source));
                 self.apply_line_number_style(&buffer, &source);
+                self.text.set_buffer(Some(&buffer));
                 self.stack.set_visible_child_name("text");
             }
             Ok(PreviewContent::StyledText(preview)) => {

@@ -2606,6 +2606,13 @@ fn install_keyboard_controller(
                 }
                 return glib::Propagation::Stop;
             }
+            if character == 'u' {
+                parser.borrow_mut().reset();
+                if let Some(browser) = browser.upgrade() {
+                    browser.load_full_preview();
+                }
+                return glib::Propagation::Stop;
+            }
             if character == '.' {
                 parser.borrow_mut().reset();
                 if let Some(browser) = browser.upgrade() {
