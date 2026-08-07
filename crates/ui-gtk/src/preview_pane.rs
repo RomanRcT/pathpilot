@@ -17,6 +17,7 @@ use vte::prelude::*;
 use crate::directory_pane::DirectoryPane;
 
 const PREVIEW_DELAY: Duration = Duration::from_millis(75);
+const MAX_GTK_STYLE_SPANS: usize = 2_000;
 
 struct PreviewState {
     gate: RefCell<PreviewGate>,
@@ -366,6 +367,19 @@ impl PreviewPane {
     }
 
     fn render_styled_text(&self, preview: StyledTextPreview) {
+        if preview.spans.len() > MAX_GTK_STYLE_SPANS {
+            let suffix = if preview.truncated {
+                "\n\n[Preview truncated · syntax styling omitted for stability]"
+            } else {
+                "\n\n[Full content · syntax styling omitted for stability]"
+            };
+            let source = format!("{}{suffix}", preview.text);
+            let buffer = gtk::TextBuffer::new(None);
+            buffer.set_text(&self.display_text(&source));
+            self.apply_line_number_style(&buffer, &source);
+            self.text.set_buffer(Some(&buffer));
+            return;
+        }
         let buffer = gtk::TextBuffer::new(None);
         let suffix = if preview.truncated {
             "\n\n[Preview truncated]"
@@ -491,7 +505,7 @@ impl PreviewPane {
     }
 
     fn apply_line_number_style(&self, buffer: &gtk::TextBuffer, text: &str) {
-        if !self.show_line_numbers {
+        if !self.show_line_numbers || text.lines().count() > MAX_GTK_STYLE_SPANS {
             return;
         }
         let tag = gtk::TextTag::builder()
