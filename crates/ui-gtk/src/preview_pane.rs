@@ -11,7 +11,7 @@ use pathpilot_preview::{
     MarkdownPreview, MarkdownStyle, PreviewCache, PreviewContent, PreviewGate, PreviewLimits,
     PreviewMode, PreviewResult, StyledTextPreview, load_preview,
 };
-use tracing::debug;
+use tracing::{debug, info};
 use vte::prelude::*;
 
 use crate::directory_pane::DirectoryPane;
@@ -298,12 +298,7 @@ impl PreviewPane {
                     );
                     return;
                 }
-                if let Some(on_finished) = on_finished.as_ref() {
-                    on_finished(result.content.is_ok());
-                }
-                state.loading.set(false);
-                pane.spinner.stop();
-                pane.title.set_label("Preview");
+                let success = result.content.is_ok();
                 if mode == PreviewMode::Automatic
                     && let Ok(content) = &result.content
                 {
@@ -313,6 +308,12 @@ impl PreviewPane {
                         .insert(&render_entry, content.clone());
                 }
                 pane.render(&render_entry, result);
+                state.loading.set(false);
+                pane.spinner.stop();
+                pane.title.set_label("Preview");
+                if let Some(on_finished) = on_finished.as_ref() {
+                    on_finished(success);
+                }
             },
         );
         *self.state.cancellable.borrow_mut() = Some(cancellable);
@@ -338,6 +339,12 @@ impl PreviewPane {
                 buffer.set_text(&self.display_text(&source));
                 self.apply_line_number_style(&buffer, &source);
                 self.text.set_buffer(Some(&buffer));
+                info!(
+                    file = entry.display_name,
+                    source_chars = source.chars().count(),
+                    buffer_chars = buffer.char_count(),
+                    "plain preview buffer installed"
+                );
                 self.stack.set_visible_child_name("text");
             }
             Ok(PreviewContent::StyledText(preview)) => {
@@ -368,6 +375,8 @@ impl PreviewPane {
 
     fn render_styled_text(&self, preview: StyledTextPreview) {
         if preview.spans.len() > MAX_GTK_STYLE_SPANS {
+            let source_char_count = preview.text.chars().count();
+            let span_count = preview.spans.len();
             let suffix = if preview.truncated {
                 "\n\n[Preview truncated · syntax styling omitted for stability]"
             } else {
@@ -378,6 +387,12 @@ impl PreviewPane {
             buffer.set_text(&self.display_text(&source));
             self.apply_line_number_style(&buffer, &source);
             self.text.set_buffer(Some(&buffer));
+            info!(
+                source_chars = source_char_count,
+                buffer_chars = buffer.char_count(),
+                span_count,
+                "full preview buffer installed without syntax styling"
+            );
             return;
         }
         let buffer = gtk::TextBuffer::new(None);
@@ -425,6 +440,11 @@ impl PreviewPane {
         }
         self.apply_line_number_style(&buffer, &source);
         self.text.set_buffer(Some(&buffer));
+        info!(
+            source_chars = source.chars().count(),
+            buffer_chars = buffer.char_count(),
+            "styled preview buffer installed"
+        );
     }
 
     fn render_markdown(&self, preview: MarkdownPreview) {
