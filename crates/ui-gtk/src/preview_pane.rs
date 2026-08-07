@@ -328,9 +328,9 @@ impl PreviewPane {
                     return;
                 }
                 let suffix = if preview.truncated {
-                    "\n\n[Fast plain-text preview truncated · Press P for full preview]"
+                    "\n\n[Fast plain-text preview truncated · Press F for full preview]"
                 } else {
-                    "\n\n[Fast plain-text preview · Press P for full syntax preview]"
+                    "\n\n[Fast plain-text preview · Press F for full syntax preview]"
                 };
                 let source = format!("{}{suffix}", preview.text);
                 let buffer = self.text.buffer();
