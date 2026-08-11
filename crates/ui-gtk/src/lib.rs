@@ -464,6 +464,9 @@ impl Browser {
     }
 
     fn selection_changed(self: &Rc<Self>, selected: u32) {
+        if self.editing.get() {
+            return;
+        }
         let total = self.current.selection.n_items();
         if total == 0 || selected == gtk::INVALID_LIST_POSITION {
             self.status.set_label("NORMAL  No selection");
@@ -1558,15 +1561,17 @@ impl Browser {
         self.preview.leave_editor();
         self.pane_layout.set(self.editor_previous_layout.get());
         self.restore_pane_layout();
-        if let Some(entry) = self.current.selected_entry() {
+        let preferred = self.current.selected_entry().map(|entry| {
             self.preview.invalidate(&entry);
-        }
-        self.selection_changed(self.current.cursor_position());
+            entry.location
+        });
+        let position = self.current.cursor_position();
+        self.reload_columns(preferred, Some(position));
         if status != 0 {
             self.status
                 .set_label(&format!("NORMAL  Neovim exited with status {status}"));
         }
-        self.current.widget.grab_focus();
+        self.current.list.grab_focus();
     }
 
     fn open_with_apps(&self, entry: &FileEntry) -> Vec<gio::AppInfo> {
@@ -1883,7 +1888,7 @@ impl Browser {
     }
 
     fn schedule_monitor_refresh(self: &Rc<Self>, generation: u64) {
-        if generation != self.monitor_generation.get() {
+        if generation != self.monitor_generation.get() || self.editing.get() {
             return;
         }
         if let Some(source) = self.monitor_refresh.borrow_mut().take() {
@@ -1896,6 +1901,9 @@ impl Browser {
             };
             browser.monitor_refresh.borrow_mut().take();
             if generation != browser.monitor_generation.get() {
+                return;
+            }
+            if browser.editing.get() {
                 return;
             }
             let preferred = browser.current.selected_entry().map(|entry| entry.location);
