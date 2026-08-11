@@ -76,6 +76,7 @@ struct Browser {
     command_palette: RefCell<CommandPalette>,
     mode: RefCell<AppMode>,
     input_source: RefCell<Option<Location>>,
+    bookmark_key: Cell<Option<char>>,
     input_bar: gtk::Box,
     input_title: gtk::Label,
     input_entry: gtk::Entry,
@@ -237,6 +238,7 @@ impl Browser {
             command_palette: RefCell::new(CommandPalette::default()),
             mode: RefCell::new(AppMode::default()),
             input_source: RefCell::new(None),
+            bookmark_key: Cell::new(None),
             input_bar,
             input_title,
             input_entry,
@@ -1140,6 +1142,24 @@ impl Browser {
         }
     }
 
+    fn start_bookmark_name(&self, key: char) {
+        if self
+            .mode
+            .borrow_mut()
+            .begin_text_input(InputModeKind::BookmarkName, "")
+        {
+            self.bookmark_key.set(Some(key));
+            *self.input_source.borrow_mut() = Some(self.navigation.borrow().current().clone());
+            self.input_entry.set_text("");
+            self.input_entry
+                .set_placeholder_text(Some("Type a bookmark name…"));
+            self.show_input_bar();
+            self.status.set_label(&format!(
+                "INPUT  Name for g {key} · Enter accept · Escape cancel"
+            ));
+        }
+    }
+
     fn show_input_bar(&self) {
         self.refresh_input_bar();
         self.input_bar.set_visible(true);
@@ -1167,6 +1187,8 @@ impl Browser {
     fn cancel_text_input(&self) {
         self.mode.borrow_mut().cancel();
         self.input_source.borrow_mut().take();
+        self.bookmark_key.take();
+        self.input_entry.set_placeholder_text(Some("Type a name…"));
         self.hide_input_bar();
         self.status.set_label("NORMAL  Input cancelled");
     }
@@ -1203,6 +1225,47 @@ impl Browser {
                     return true;
                 };
                 rename(self.operation_id(), &source, &value, callback)
+            }
+            InputModeKind::BookmarkName => {
+                self.input_entry.set_placeholder_text(Some("Type a name…"));
+                let Some(key) = self.bookmark_key.take() else {
+                    self.status.set_label("NORMAL  Bookmark key is unavailable");
+                    return true;
+                };
+                let Some(location) = source else {
+                    self.status
+                        .set_label("NORMAL  Bookmark location is unavailable");
+                    return true;
+                };
+                let bookmark = pathpilot_config::Bookmark {
+                    key: key.to_string(),
+                    label: value.trim().to_owned(),
+                    uri: location.uri().to_owned(),
+                };
+                let mut bookmarks = self.settings.borrow().bookmarks.clone();
+                bookmarks.push(bookmark);
+                let Some(path) = self
+                    .settings_path
+                    .as_deref()
+                    .map(|path| path.with_file_name("bookmarks.toml"))
+                else {
+                    self.status
+                        .set_label("NORMAL  Bookmark settings are unavailable");
+                    return true;
+                };
+                match pathpilot_config::save_bookmarks(&path, &bookmarks) {
+                    Ok(()) => {
+                        self.settings.borrow_mut().bookmarks = bookmarks;
+                        self.status
+                            .set_label(&format!("NORMAL  Bookmark added as g {key}"));
+                    }
+                    Err(error) => {
+                        warn!(%error, "could not persist bookmark");
+                        self.status
+                            .set_label(&format!("NORMAL  Could not save bookmark: {error}"));
+                    }
+                }
+                return true;
             }
         };
         self.status.set_label("NORMAL  Operation started…");
@@ -1632,8 +1695,12 @@ impl Browser {
         if !history.iter().any(|existing| existing == id.as_str()) {
             history.push(id.to_string());
         }
-        if let Some(path) = self.settings_path.as_deref()
-            && let Err(error) = pathpilot_config::save_settings(path, &settings)
+        if let Some(path) = self
+            .settings_path
+            .as_deref()
+            .map(|path| path.with_file_name("open-with.toml"))
+            && let Err(error) =
+                pathpilot_config::save_open_with(path.as_path(), &settings.open_with)
         {
             warn!(%error, "could not persist open-with history");
         }
@@ -2243,13 +2310,14 @@ fn install_keyboard_controller(
             .borrow_mut()
             .set_key_labels(keymap.key_labels());
     }
-    let places = Rc::new(browser.upgrade().map_or_else(
+    let places = browser.upgrade().map_or_else(
         || default_places(&[]),
         |browser| default_places(&browser.settings.borrow().bookmarks),
-    ));
+    );
     let mut reference = keymap.command_reference();
     reference.retain(|(keys, _)| !keys.starts_with('g'));
     reference.extend([
+        ("b".to_owned(), "Bookmark current directory"),
         ("e".to_owned(), "Edit in Neovim"),
         ("f".to_owned(), "Find by name"),
         ("Space".to_owned(), "Toggle selection"),
@@ -2292,9 +2360,10 @@ fn install_keyboard_controller(
     let command_reference = command_reference.clone();
     let settings = settings.clone();
     let settings_path = settings_path.clone();
-    let places = places.clone();
     let place_pending = Rc::new(Cell::new(false));
     let place_pending_for_keys = place_pending.clone();
+    let bookmark_pending = Rc::new(Cell::new(false));
+    let bookmark_pending_for_keys = bookmark_pending.clone();
     let sort_pending = Rc::new(Cell::new(false));
     let sort_pending_for_keys = sort_pending.clone();
     let open_with_pending = Rc::new(RefCell::new(None::<(Option<FileEntry>, Vec<gio::AppInfo>)>));
@@ -2373,6 +2442,7 @@ fn install_keyboard_controller(
 
         if key == gdk::Key::Escape {
             place_pending_for_keys.set(false);
+            bookmark_pending_for_keys.set(false);
             sort_pending_for_keys.set(false);
             open_with_pending_for_keys.borrow_mut().take();
             if browser
@@ -2515,7 +2585,32 @@ fn install_keyboard_controller(
                 restore_hint_panel(&key_hints, hints_enabled.get(), &command_reference);
                 return glib::Propagation::Stop;
             }
+            if bookmark_pending_for_keys.get() {
+                let places = default_places(&settings.borrow().bookmarks);
+                let available = character.is_ascii_alphanumeric()
+                    && !places.iter().any(|place| place.key == character);
+                if available {
+                    bookmark_pending_for_keys.set(false);
+                    if let Some(browser) = browser.upgrade() {
+                        browser.start_bookmark_name(character);
+                    }
+                    key_hints.set_visible(false);
+                } else {
+                    let reason = if !character.is_ascii_alphanumeric() {
+                        "use one ASCII letter or digit"
+                    } else {
+                        "that g key is already in use"
+                    };
+                    if let Some(browser) = browser.upgrade() {
+                        browser.status.set_label(&format!(
+                            "INPUT  Cannot use g {character}: {reason} · Escape cancel"
+                        ));
+                    }
+                }
+                return glib::Propagation::Stop;
+            }
             if place_pending_for_keys.replace(false) {
+                let places = default_places(&settings.borrow().bookmarks);
                 if let Some(place) = places.iter().find(|place| place.key == character)
                     && let Some(browser) = browser.upgrade()
                 {
@@ -2534,6 +2629,7 @@ fn install_keyboard_controller(
             if character == 'g' {
                 parser.borrow_mut().reset();
                 place_pending_for_keys.set(true);
+                let places = default_places(&settings.borrow().bookmarks);
                 populate_hint_grid(
                     &key_hints,
                     places
@@ -2541,6 +2637,33 @@ fn install_keyboard_controller(
                         .map(|place| (place.key.to_string(), place.label.as_str())),
                 );
                 key_hints.set_visible(true);
+                return glib::Propagation::Stop;
+            }
+            if character == 'b' {
+                parser.borrow_mut().reset();
+                bookmark_pending_for_keys.set(true);
+                let places = default_places(&settings.borrow().bookmarks);
+                let occupied: Vec<_> = places
+                    .iter()
+                    .map(|place| {
+                        (
+                            place.key.to_string(),
+                            format!("{} (used)", place.label),
+                        )
+                    })
+                    .collect();
+                populate_hint_grid(
+                    &key_hints,
+                    occupied
+                        .iter()
+                        .map(|(key, label)| (key.clone(), label.as_str())),
+                );
+                key_hints.set_visible(true);
+                if let Some(browser) = browser.upgrade() {
+                    browser
+                        .status
+                        .set_label("INPUT  Press an unused letter or digit for the new g bookmark · Escape cancel");
+                }
                 return glib::Propagation::Stop;
             }
             if character == ' ' {

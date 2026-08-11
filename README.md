@@ -77,6 +77,7 @@ directory and `h` to return to its parent.
 | `z` | Cycle pane layout |
 | `u` / `Escape` | Load full syntax preview / cancel loading |
 | `e` | Edit a local text file in embedded Neovim |
+| `b` | Bookmark the current directory and choose its `g` key |
 | `:` / `F1` | Command palette / command reference |
 
 ## Current limitations
@@ -177,9 +178,11 @@ to the tagged release. To publish packages, push a matching version tag such
 as `v0.2.0`; the workflow can also be started manually for an existing tag.
 
 User settings are stored under `${XDG_CONFIG_HOME:-~/.config}/pathpilot/`.
-`config.toml` contains UI state, bookmarks, and Open With history;
-`keymap.toml` can override the default command bindings. See the focused guides
-in [`docs/`](docs/) for configuration examples and implemented behavior.
+`config.toml` contains UI state, `bookmarks.toml` contains places for the `g`
+menu, and `open-with.toml` contains Open With history. `keymap.toml` can override
+the default command bindings. Existing bookmarks and Open With history in
+`config.toml` are migrated automatically. See the focused guides in
+[`docs/`](docs/) for configuration examples and implemented behavior.
 
 Preview line numbers and the application color scheme can be configured under
 `[ui]` (close PathPilot before editing the file):

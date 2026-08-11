@@ -335,6 +335,7 @@ pub enum InputModeKind {
     CreateFile,
     CreateDirectory,
     Rename,
+    BookmarkName,
 }
 
 impl InputModeKind {
@@ -343,6 +344,7 @@ impl InputModeKind {
             Self::CreateFile => "Create file",
             Self::CreateDirectory => "Create directory",
             Self::Rename => "Rename",
+            Self::BookmarkName => "Bookmark name",
         }
     }
 }
@@ -408,9 +410,11 @@ impl TextInputMode {
     }
 
     fn validate(&mut self) -> bool {
-        self.error = if self.value.is_empty() {
+        self.error = if self.value.trim().is_empty() {
             Some("Name cannot be empty")
-        } else if self.value == "." || self.value == ".." || self.value.contains(['/', '\0']) {
+        } else if self.kind != InputModeKind::BookmarkName
+            && (self.value == "." || self.value == ".." || self.value.contains(['/', '\0']))
+        {
             Some("Name cannot contain a path separator or be . or ..")
         } else {
             None
@@ -1558,5 +1562,18 @@ mod tests {
             Some((InputModeKind::Rename, "new-name.txt".to_owned()))
         );
         assert_eq!(mode, AppMode::Normal);
+    }
+
+    #[test]
+    fn bookmark_names_allow_path_separators_but_not_blank_values() {
+        let mut mode = AppMode::default();
+        assert!(mode.begin_text_input(InputModeKind::BookmarkName, "Work / Projects"));
+        assert_eq!(
+            mode.submit_text_input(),
+            Some((InputModeKind::BookmarkName, "Work / Projects".to_owned()))
+        );
+
+        assert!(mode.begin_text_input(InputModeKind::BookmarkName, "   "));
+        assert_eq!(mode.submit_text_input(), None);
     }
 }

@@ -10,7 +10,7 @@ type. Repeated choices are deduplicated. PathPilot does not change the desktop
 default itself; any default-application choice remains under the system
 dialog's control.
 
-History is persisted in `config.toml`, for example:
+History is persisted in `open-with.toml`, for example:
 
 ```toml
 [open_with]

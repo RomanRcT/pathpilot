@@ -68,14 +68,43 @@ pub fn settings_path() -> Option<PathBuf> {
     default_path().and_then(|path| path.parent().map(|parent| parent.join("config.toml")))
 }
 
-#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(default)]
+pub fn bookmarks_path() -> Option<PathBuf> {
+    default_path().and_then(|path| path.parent().map(|parent| parent.join("bookmarks.toml")))
+}
+
+pub fn open_with_path() -> Option<PathBuf> {
+    default_path().and_then(|path| path.parent().map(|parent| parent.join("open-with.toml")))
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct Settings {
     pub ui: UiSettings,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
     pub bookmarks: Vec<Bookmark>,
-    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub open_with: BTreeMap<String, Vec<String>>,
+}
+
+#[derive(Debug, Default, Deserialize, Serialize)]
+#[serde(default)]
+struct ConfigFile {
+    ui: UiSettings,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    bookmarks: Vec<Bookmark>,
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    open_with: BTreeMap<String, Vec<String>>,
+}
+
+#[derive(Debug, Default, Deserialize, Serialize)]
+#[serde(default)]
+struct BookmarksFile {
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    bookmarks: Vec<Bookmark>,
+}
+
+#[derive(Debug, Default, Deserialize, Serialize)]
+#[serde(default)]
+struct OpenWithFile {
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    open_with: BTreeMap<String, Vec<String>>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -135,19 +164,78 @@ pub fn load_settings(path: Option<&Path>) -> (Settings, Option<String>) {
     let Some(path) = path else {
         return (Settings::default(), None);
     };
+    let config = match load_toml::<ConfigFile>(path) {
+        Ok(Some(config)) => config,
+        Ok(None) => ConfigFile::default(),
+        Err(error) => return (Settings::default(), Some(error)),
+    };
+    if let Err(error) = validate_bookmarks(&config.bookmarks) {
+        return (Settings::default(), Some(error));
+    }
+
+    let bookmarks_path = path.with_file_name("bookmarks.toml");
+    let open_with_path = path.with_file_name("open-with.toml");
+    let bookmarks_exist = bookmarks_path.exists();
+    let open_with_exists = open_with_path.exists();
+    let bookmarks = match load_toml::<BookmarksFile>(&bookmarks_path) {
+        Ok(Some(file)) => file.bookmarks,
+        Ok(None) => config.bookmarks.clone(),
+        Err(error) => return (Settings::default(), Some(error)),
+    };
+    if let Err(error) = validate_bookmarks(&bookmarks) {
+        return (Settings::default(), Some(error));
+    }
+    let open_with = match load_toml::<OpenWithFile>(&open_with_path) {
+        Ok(Some(file)) => file.open_with,
+        Ok(None) => config.open_with.clone(),
+        Err(error) => return (Settings::default(), Some(error)),
+    };
+
+    let settings = Settings {
+        ui: config.ui,
+        bookmarks,
+        open_with,
+    };
+    let migrating_bookmarks = !bookmarks_exist && !config.bookmarks.is_empty();
+    let migrating_open_with = !open_with_exists && !config.open_with.is_empty();
+    if migrating_bookmarks || migrating_open_with {
+        if migrating_bookmarks
+            && let Err(error) = save_bookmarks(&bookmarks_path, &settings.bookmarks)
+        {
+            return (
+                settings,
+                Some(format!("could not migrate bookmarks: {error}")),
+            );
+        }
+        if migrating_open_with
+            && let Err(error) = save_open_with(&open_with_path, &settings.open_with)
+        {
+            return (
+                settings,
+                Some(format!("could not migrate Open With history: {error}")),
+            );
+        }
+        if let Err(error) = save_settings(path, &settings) {
+            return (
+                settings,
+                Some(format!("could not finish settings migration: {error}")),
+            );
+        }
+    }
+    (settings, None)
+}
+
+fn load_toml<T: for<'de> Deserialize<'de>>(path: &Path) -> Result<Option<T>, String> {
     if !path.exists() {
-        return (Settings::default(), None);
+        return Ok(None);
     }
-    match fs::read_to_string(path)
-        .map_err(|error| error.to_string())
-        .and_then(|source| toml::from_str::<Settings>(&source).map_err(|error| error.to_string()))
-    {
-        Ok(settings) => match validate_bookmarks(&settings.bookmarks) {
-            Ok(()) => (settings, None),
-            Err(error) => (Settings::default(), Some(error)),
-        },
-        Err(error) => (Settings::default(), Some(error)),
-    }
+    fs::read_to_string(path)
+        .map_err(|error| format!("{}: {error}", path.display()))
+        .and_then(|source| {
+            toml::from_str(&source)
+                .map(Some)
+                .map_err(|error| format!("{}: {error}", path.display()))
+        })
 }
 
 fn validate_bookmarks(bookmarks: &[Bookmark]) -> Result<(), String> {
@@ -174,13 +262,45 @@ fn validate_bookmarks(bookmarks: &[Bookmark]) -> Result<(), String> {
 }
 
 pub fn save_settings(path: &Path, settings: &Settings) -> Result<(), String> {
+    save_toml(
+        path,
+        &ConfigFile {
+            ui: settings.ui.clone(),
+            ..ConfigFile::default()
+        },
+    )
+}
+
+pub fn save_bookmarks(path: &Path, bookmarks: &[Bookmark]) -> Result<(), String> {
+    validate_bookmarks(bookmarks)?;
+    save_toml(
+        path,
+        &BookmarksFile {
+            bookmarks: bookmarks.to_vec(),
+        },
+    )
+}
+
+pub fn save_open_with(
+    path: &Path,
+    open_with: &BTreeMap<String, Vec<String>>,
+) -> Result<(), String> {
+    save_toml(
+        path,
+        &OpenWithFile {
+            open_with: open_with.clone(),
+        },
+    )
+}
+
+fn save_toml<T: Serialize>(path: &Path, value: &T) -> Result<(), String> {
     let parent = path
         .parent()
         .ok_or_else(|| "settings path has no parent".to_owned())?;
     fs::create_dir_all(parent).map_err(|error| error.to_string())?;
     fs::write(
         path,
-        toml::to_string_pretty(settings).map_err(|error| error.to_string())?,
+        toml::to_string_pretty(value).map_err(|error| error.to_string())?,
     )
     .map_err(|error| error.to_string())
 }
@@ -320,11 +440,6 @@ mod tests {
         let path = dir.path().join("config.toml");
         let mut settings = Settings::default();
         settings.ui.hints_enabled = true;
-        settings.bookmarks.push(Bookmark {
-            key: "w".to_owned(),
-            label: "Work".to_owned(),
-            uri: "file:///srv/work".to_owned(),
-        });
         save_settings(&path, &settings).unwrap();
         assert_eq!(load_settings(Some(&path)).0, settings);
         fs::write(&path, "[ui]\nhints_enabled = true\n").unwrap();
@@ -334,26 +449,74 @@ mod tests {
     }
 
     #[test]
-    fn empty_bookmarks_are_not_written() {
+    fn config_contains_only_ui_settings() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("config.toml");
-        save_settings(&path, &Settings::default()).unwrap();
+        let mut settings = Settings::default();
+        settings.bookmarks.push(Bookmark {
+            key: "w".to_owned(),
+            label: "Work".to_owned(),
+            uri: "file:///srv/work".to_owned(),
+        });
+        settings.open_with.insert(
+            "text/plain".to_owned(),
+            vec!["org.gnome.TextEditor.desktop".to_owned()],
+        );
+        save_settings(&path, &settings).unwrap();
         let source = fs::read_to_string(path).unwrap();
         assert!(!source.contains("bookmarks"));
         assert!(!source.contains("open_with"));
     }
 
     #[test]
-    fn open_with_history_round_trips_by_content_type() {
+    fn companion_files_round_trip() {
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("config.toml");
+        let config_path = dir.path().join("config.toml");
+        let bookmarks_path = dir.path().join("bookmarks.toml");
+        let open_with_path = dir.path().join("open-with.toml");
         let mut settings = Settings::default();
+        settings.bookmarks.push(Bookmark {
+            key: "w".to_owned(),
+            label: "Work".to_owned(),
+            uri: "file:///srv/work".to_owned(),
+        });
         settings.open_with.insert(
             "text/plain".to_owned(),
             vec!["org.gnome.TextEditor.desktop".to_owned()],
         );
-        save_settings(&path, &settings).unwrap();
-        assert_eq!(load_settings(Some(&path)).0, settings);
+        save_settings(&config_path, &settings).unwrap();
+        save_bookmarks(&bookmarks_path, &settings.bookmarks).unwrap();
+        save_open_with(&open_with_path, &settings.open_with).unwrap();
+        assert_eq!(load_settings(Some(&config_path)).0, settings);
+    }
+
+    #[test]
+    fn legacy_config_is_migrated_to_companion_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = dir.path().join("config.toml");
+        fs::write(
+            &config_path,
+            r#"
+bookmarks = [{ key = "w", label = "Work", uri = "file:///srv/work" }]
+
+[open_with]
+"text/plain" = ["org.gnome.TextEditor.desktop"]
+"#,
+        )
+        .unwrap();
+
+        let (settings, warning) = load_settings(Some(&config_path));
+        assert!(warning.is_none());
+        assert_eq!(settings.bookmarks[0].key, "w");
+        assert_eq!(
+            settings.open_with["text/plain"],
+            ["org.gnome.TextEditor.desktop"]
+        );
+        assert!(dir.path().join("bookmarks.toml").exists());
+        assert!(dir.path().join("open-with.toml").exists());
+        let config = fs::read_to_string(config_path).unwrap();
+        assert!(!config.contains("bookmarks"));
+        assert!(!config.contains("open_with"));
     }
 
     #[test]
