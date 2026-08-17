@@ -13,7 +13,9 @@ finish-args:
   - --socket=fallback-x11
   - --device=dri
   - --filesystem=host
+  - --filesystem=xdg-run/gvfsd
   - --talk-name=org.freedesktop.Flatpak
+  - --talk-name=org.gtk.vfs.*
 
 build-options:
   append-path: /usr/lib/sdk/rust-stable/bin

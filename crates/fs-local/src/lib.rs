@@ -1,17 +1,22 @@
-//! Asynchronous local-directory enumeration through GIO.
+//! Asynchronous directory enumeration through local and GVfs-backed GIO locations.
 
 use std::{
     fs::File,
     io::Read,
     rc::Rc,
-    time::{Duration, UNIX_EPOCH},
+    time::{Duration, Instant, UNIX_EPOCH},
 };
 
 use gio::prelude::*;
 use pathpilot_core::{FileEntry, FileKind, Generation, Location};
-use tracing::{debug, warn};
+use tracing::{debug, info, warn};
 
-const ATTRIBUTES: &str = "standard::name,standard::display-name,standard::type,standard::is-hidden,standard::is-symlink,standard::size,standard::content-type,time::modified,unix::mode";
+const LOCAL_ATTRIBUTES: &str = "standard::name,standard::display-name,standard::type,standard::is-hidden,standard::is-symlink,standard::size,standard::content-type,time::modified,unix::mode";
+// Keep remote enumeration minimal. GVfs SMB may resolve requested metadata
+// before returning the enumerator, turning even a one-entry folder into a
+// multi-second operation on high-latency servers.
+const REMOTE_ATTRIBUTES: &str =
+    "standard::name,standard::display-name,standard::type,standard::is-hidden";
 const BATCH_SIZE: i32 = 256;
 
 #[derive(Debug)]
@@ -36,18 +41,48 @@ pub fn load_directory(
 ) -> gio::Cancellable {
     let cancellable = gio::Cancellable::new();
     let file = gio::File::for_uri(location.uri());
+    let is_native = file.is_native();
+    let attributes = if is_native {
+        LOCAL_ATTRIBUTES
+    } else {
+        REMOTE_ATTRIBUTES
+    };
+    let started = Instant::now();
+    let location_uri = location.uri().to_owned();
     let on_event: Rc<dyn Fn(DirectoryEvent)> = Rc::new(on_event);
+    let query_flags = if is_native {
+        gio::FileQueryInfoFlags::NOFOLLOW_SYMLINKS
+    } else {
+        gio::FileQueryInfoFlags::NONE
+    };
 
     file.enumerate_children_async(
-        ATTRIBUTES,
-        gio::FileQueryInfoFlags::NOFOLLOW_SYMLINKS,
+        attributes,
+        query_flags,
         glib::Priority::DEFAULT,
         Some(&cancellable),
         {
             let cancellable = cancellable.clone();
             let on_event = on_event.clone();
+            let location_uri = location_uri.clone();
             move |result| match result {
-                Ok(enumerator) => next_batch(enumerator, cancellable, generation, on_event),
+                Ok(enumerator) => {
+                    info!(
+                        generation = generation.value(),
+                        elapsed_ms = started.elapsed().as_millis(),
+                        location = location_uri,
+                        "directory enumerator ready"
+                    );
+                    next_batch(
+                        enumerator,
+                        cancellable,
+                        generation,
+                        on_event,
+                        BATCH_SIZE,
+                        started,
+                        location_uri,
+                    );
+                }
                 Err(error) if error.matches(gio::IOErrorEnum::Cancelled) => {
                     debug!(
                         generation = generation.value(),
@@ -73,15 +108,31 @@ fn next_batch(
     cancellable: gio::Cancellable,
     generation: Generation,
     on_event: Rc<dyn Fn(DirectoryEvent)>,
+    batch_size: i32,
+    started: Instant,
+    location_uri: String,
 ) {
     let callback_cancellable = cancellable.clone();
-    enumerator.next_files_async(BATCH_SIZE, glib::Priority::DEFAULT, Some(&cancellable), {
+    enumerator.next_files_async(batch_size, glib::Priority::DEFAULT, Some(&cancellable), {
         let enumerator_for_callback = enumerator.clone();
         move |result| match result {
             Ok(infos) if infos.is_empty() => {
+                info!(
+                    generation = generation.value(),
+                    elapsed_ms = started.elapsed().as_millis(),
+                    location = location_uri,
+                    "directory enumeration reached end"
+                );
                 on_event(DirectoryEvent::Finished { generation });
             }
             Ok(infos) => {
+                info!(
+                    generation = generation.value(),
+                    batch_entries = infos.len(),
+                    elapsed_ms = started.elapsed().as_millis(),
+                    location = location_uri,
+                    "directory batch received"
+                );
                 let entries = infos
                     .iter()
                     .map(|info| file_entry(&enumerator_for_callback, info))
@@ -95,6 +146,9 @@ fn next_batch(
                     callback_cancellable,
                     generation,
                     on_event,
+                    BATCH_SIZE,
+                    started,
+                    location_uri,
                 );
             }
             Err(error) if error.matches(gio::IOErrorEnum::Cancelled) => {
@@ -113,7 +167,8 @@ fn next_batch(
 
 fn file_entry(enumerator: &gio::FileEnumerator, info: &gio::FileInfo) -> FileEntry {
     let file_type = info.file_type();
-    let is_symlink = info.is_symlink();
+    let is_symlink =
+        info.has_attribute(gio::FILE_ATTRIBUTE_STANDARD_IS_SYMLINK) && info.is_symlink();
     let kind = if is_symlink {
         FileKind::Symlink
     } else {
@@ -127,30 +182,59 @@ fn file_entry(enumerator: &gio::FileEnumerator, info: &gio::FileInfo) -> FileEnt
             _ => FileKind::Unknown,
         }
     };
-    let modified = info.modification_date_time().and_then(|date_time| {
-        let seconds = date_time.to_unix();
-        u64::try_from(seconds)
-            .ok()
-            .map(|seconds| UNIX_EPOCH + Duration::from_secs(seconds))
-    });
+    let modified = info
+        .has_attribute(gio::FILE_ATTRIBUTE_TIME_MODIFIED)
+        .then(|| info.modification_date_time())
+        .flatten()
+        .and_then(|date_time| {
+            let seconds = date_time.to_unix();
+            u64::try_from(seconds)
+                .ok()
+                .map(|seconds| UNIX_EPOCH + Duration::from_secs(seconds))
+        });
 
     let child = enumerator.child(info);
-    let archive_format = (kind == FileKind::Regular)
+    let display_name = info.display_name().to_string();
+    // GVfs may expose a FUSE path even for a remote URI. Opening that path here
+    // performs synchronous network I/O on the GTK thread once per file and can
+    // freeze navigation for many seconds. Signature probing is a local-only
+    // feature, so never use the path reported for a non-native GFile.
+    let archive_format = (kind == FileKind::Regular && child.is_native())
         .then(|| child.path())
         .flatten()
         .and_then(|path| detect_archive_signature(&path));
+    let content_type = info
+        .has_attribute(gio::FILE_ATTRIBUTE_STANDARD_CONTENT_TYPE)
+        .then(|| info.content_type())
+        .flatten()
+        .map(|value| value.to_string())
+        .or_else(|| {
+            (kind == FileKind::Regular).then(|| {
+                let (guessed, _) = gio::content_type_guess(Some(&display_name), None);
+                guessed.to_string()
+            })
+        });
+    let is_hidden = if info.has_attribute(gio::FILE_ATTRIBUTE_STANDARD_IS_HIDDEN) {
+        info.is_hidden()
+    } else {
+        display_name.starts_with('.')
+    };
     FileEntry {
         location: Location::new(child.uri()),
-        display_name: info.display_name().to_string(),
+        display_name,
         kind,
-        size: (info.size() >= 0).then_some(info.size() as u64),
+        size: info
+            .has_attribute(gio::FILE_ATTRIBUTE_STANDARD_SIZE)
+            .then(|| info.size())
+            .filter(|size| *size >= 0)
+            .map(|size| size as u64),
         modified,
         unix_mode: info
-            .attribute_uint32("unix::mode")
-            .ne(&0)
-            .then(|| info.attribute_uint32("unix::mode")),
-        content_type: info.content_type().map(|value| value.to_string()),
-        is_hidden: info.is_hidden(),
+            .has_attribute(gio::FILE_ATTRIBUTE_UNIX_MODE)
+            .then(|| info.attribute_uint32(gio::FILE_ATTRIBUTE_UNIX_MODE))
+            .filter(|mode| *mode != 0),
+        content_type,
+        is_hidden,
         is_symlink,
         archive_format,
     }

@@ -19,6 +19,24 @@ impl Location {
     pub fn uri(&self) -> &str {
         &self.uri
     }
+
+    pub fn capabilities(&self) -> LocationCapabilities {
+        let is_local = self.uri.starts_with("file:");
+        LocationCapabilities {
+            local_processes: is_local,
+            native_paths: is_local,
+            git: is_local,
+            archives: is_local,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct LocationCapabilities {
+    pub local_processes: bool,
+    pub native_paths: bool,
+    pub git: bool,
+    pub archives: bool,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -336,6 +354,7 @@ pub enum InputModeKind {
     CreateDirectory,
     Rename,
     BookmarkName,
+    LocationUri,
 }
 
 impl InputModeKind {
@@ -345,6 +364,7 @@ impl InputModeKind {
             Self::CreateDirectory => "Create directory",
             Self::Rename => "Rename",
             Self::BookmarkName => "Bookmark name",
+            Self::LocationUri => "Location",
         }
     }
 }
@@ -411,9 +431,14 @@ impl TextInputMode {
 
     fn validate(&mut self) -> bool {
         self.error = if self.value.trim().is_empty() {
-            Some("Name cannot be empty")
-        } else if self.kind != InputModeKind::BookmarkName
-            && (self.value == "." || self.value == ".." || self.value.contains(['/', '\0']))
+            Some(match self.kind {
+                InputModeKind::LocationUri => "Location cannot be empty",
+                _ => "Name cannot be empty",
+            })
+        } else if !matches!(
+            self.kind,
+            InputModeKind::BookmarkName | InputModeKind::LocationUri
+        ) && (self.value == "." || self.value == ".." || self.value.contains(['/', '\0']))
         {
             Some("Name cannot contain a path separator or be . or ..")
         } else {
@@ -1166,6 +1191,21 @@ mod tests {
     fn locations_keep_backend_neutral_uris() {
         let location = Location::new("file:///tmp/example");
         assert_eq!(location.uri(), "file:///tmp/example");
+    }
+
+    #[test]
+    fn location_capabilities_separate_native_tools_from_remote_io() {
+        let local = Location::new("file:///tmp").capabilities();
+        assert!(local.local_processes);
+        assert!(local.native_paths);
+        assert!(local.git);
+        assert!(local.archives);
+
+        let remote = Location::new("sftp://example.test/home/user").capabilities();
+        assert!(!remote.local_processes);
+        assert!(!remote.native_paths);
+        assert!(!remote.git);
+        assert!(!remote.archives);
     }
 
     #[test]

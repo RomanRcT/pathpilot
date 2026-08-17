@@ -248,6 +248,9 @@ fn validate_bookmarks(bookmarks: &[Bookmark]) -> Result<(), String> {
         if characters.next().is_some() || !key.is_ascii_alphanumeric() {
             return Err(format!("invalid bookmark key `{}`", bookmark.key));
         }
+        // Keep accepting l/w from older bookmark files. The UI reserves those
+        // keys for remote connections when creating new bookmarks, but making
+        // them a config-level error would discard otherwise valid UI settings.
         if ['g', 'h', 'd', 'r'].contains(&key) || !keys.insert(key) {
             return Err(format!("duplicate or reserved bookmark key `{key}`"));
         }
@@ -454,7 +457,7 @@ mod tests {
         let path = dir.path().join("config.toml");
         let mut settings = Settings::default();
         settings.bookmarks.push(Bookmark {
-            key: "w".to_owned(),
+            key: "p".to_owned(),
             label: "Work".to_owned(),
             uri: "file:///srv/work".to_owned(),
         });
@@ -476,7 +479,7 @@ mod tests {
         let open_with_path = dir.path().join("open-with.toml");
         let mut settings = Settings::default();
         settings.bookmarks.push(Bookmark {
-            key: "w".to_owned(),
+            key: "p".to_owned(),
             label: "Work".to_owned(),
             uri: "file:///srv/work".to_owned(),
         });
@@ -491,13 +494,30 @@ mod tests {
     }
 
     #[test]
+    fn legacy_remote_keys_do_not_discard_ui_settings() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = dir.path().join("config.toml");
+        fs::write(&config_path, "[ui]\nwindow_width = 1777\n").unwrap();
+        fs::write(
+            dir.path().join("bookmarks.toml"),
+            "bookmarks = [{ key = \"w\", label = \"Work\", uri = \"file:///srv/work\" }]\n",
+        )
+        .unwrap();
+
+        let (settings, warning) = load_settings(Some(&config_path));
+        assert!(warning.is_none());
+        assert_eq!(settings.ui.window_width, 1777);
+        assert_eq!(settings.bookmarks[0].key, "w");
+    }
+
+    #[test]
     fn legacy_config_is_migrated_to_companion_files() {
         let dir = tempfile::tempdir().unwrap();
         let config_path = dir.path().join("config.toml");
         fs::write(
             &config_path,
             r#"
-bookmarks = [{ key = "w", label = "Work", uri = "file:///srv/work" }]
+bookmarks = [{ key = "p", label = "Work", uri = "file:///srv/work" }]
 
 [open_with]
 "text/plain" = ["org.gnome.TextEditor.desktop"]
@@ -507,7 +527,7 @@ bookmarks = [{ key = "w", label = "Work", uri = "file:///srv/work" }]
 
         let (settings, warning) = load_settings(Some(&config_path));
         assert!(warning.is_none());
-        assert_eq!(settings.bookmarks[0].key, "w");
+        assert_eq!(settings.bookmarks[0].key, "p");
         assert_eq!(
             settings.open_with["text/plain"],
             ["org.gnome.TextEditor.desktop"]
@@ -531,7 +551,7 @@ bookmarks = [{ key = "w", label = "Work", uri = "file:///srv/work" }]
         );
         assert!(
             validate_bookmarks(&[Bookmark {
-                key: "w".to_owned(),
+                key: "p".to_owned(),
                 label: "Work".to_owned(),
                 uri: "/tmp".to_owned()
             }])
@@ -540,12 +560,12 @@ bookmarks = [{ key = "w", label = "Work", uri = "file:///srv/work" }]
         assert!(
             validate_bookmarks(&[
                 Bookmark {
-                    key: "w".to_owned(),
+                    key: "p".to_owned(),
                     label: "One".to_owned(),
                     uri: "file:///one".to_owned()
                 },
                 Bookmark {
-                    key: "w".to_owned(),
+                    key: "p".to_owned(),
                     label: "Two".to_owned(),
                     uri: "file:///two".to_owned()
                 },

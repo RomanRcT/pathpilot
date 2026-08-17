@@ -14,11 +14,11 @@ use pathpilot_preview::{
 use tracing::{debug, info};
 use vte::prelude::*;
 
-use crate::directory_pane::DirectoryPane;
+use crate::directory_pane::{DirectoryPane, SharedDirectoryCache};
 
-const PREVIEW_DELAY: Duration = Duration::from_millis(75);
 const MAX_GTK_STYLE_SPANS: usize = 8_000;
 const MAX_GTK_LINE_NUMBER_TAGS: usize = 2_000;
+const MIN_REMOTE_DIRECTORY_PREVIEW_DELAY: Duration = Duration::from_millis(350);
 
 struct PreviewState {
     gate: RefCell<PreviewGate>,
@@ -53,13 +53,19 @@ pub struct PreviewPane {
     text: gtk::TextView,
     picture: gtk::Picture,
     spinner: gtk::Spinner,
+    loading_label: gtk::Label,
     show_line_numbers: bool,
+    preview_delay: Duration,
     state: Rc<PreviewState>,
 }
 
 impl PreviewPane {
-    pub fn new(show_line_numbers: bool) -> Self {
-        let directory = DirectoryPane::new("Directory preview");
+    pub fn new(
+        show_line_numbers: bool,
+        preview_delay_ms: u64,
+        remote_cache: SharedDirectoryCache,
+    ) -> Self {
+        let directory = DirectoryPane::with_remote_cache("Directory preview", remote_cache);
         let metadata = gtk::Label::builder()
             .wrap(true)
             .xalign(0.0)
@@ -160,7 +166,9 @@ impl PreviewPane {
             text,
             picture,
             spinner,
+            loading_label,
             show_line_numbers,
+            preview_delay: Duration::from_millis(preview_delay_ms),
             state: Rc::new(PreviewState::default()),
         }
     }
@@ -203,15 +211,21 @@ impl PreviewPane {
             self.metadata.remove_css_class("archive-metadata");
         }
         let generation = self.state.gate.borrow_mut().begin();
-        if !self.state.has_rendered_content.get() {
-            self.metadata
-                .set_label(&basic_metadata(&entry, "Loading preview…"));
-            self.stack.set_visible_child_name("metadata");
-        }
+        self.state.loading.set(true);
+        self.loading_label.set_label("Loading preview…");
+        self.stack.set_visible_child_name("loading");
+        self.spinner.start();
 
+        let delay = if entry.kind == FileKind::Directory
+            && !gio::File::for_uri(entry.location.uri()).is_native()
+        {
+            self.preview_delay.max(MIN_REMOTE_DIRECTORY_PREVIEW_DELAY)
+        } else {
+            self.preview_delay
+        };
         let pane = self.clone();
         let state = self.state.clone();
-        let source = glib::timeout_add_local_once(PREVIEW_DELAY, move || {
+        let source = glib::timeout_add_local_once(delay, move || {
             state.delay.borrow_mut().take();
             if state.gate.borrow().accepts(generation) {
                 pane.start(entry, generation, PreviewMode::Automatic, None);
@@ -229,6 +243,8 @@ impl PreviewPane {
             entry.display_name
         ));
         self.stack.set_visible_child_name("loading");
+        self.loading_label
+            .set_label("Loading full preview…\nPress Escape to cancel");
         self.spinner.start();
         self.spinner.queue_draw();
         self.start(
@@ -258,6 +274,22 @@ impl PreviewPane {
         self.stack.set_visible_child_name("metadata");
     }
 
+    pub fn show_location_loading(&self, location: &str) {
+        self.cancel();
+        self.title.set_label("Opening location");
+        self.loading_label
+            .set_label(&format!("Loading folder…\n{location}"));
+        self.stack.set_visible_child_name("loading");
+        self.spinner.start();
+    }
+
+    pub fn show_location_error(&self, error: &str) {
+        self.cancel();
+        self.title.set_label("Could not open location");
+        self.metadata.set_label(error);
+        self.stack.set_visible_child_name("metadata");
+    }
+
     pub fn cancel(&self) {
         self.state.gate.borrow_mut().begin();
         if let Some(source) = self.state.delay.borrow_mut().take() {
@@ -281,7 +313,18 @@ impl PreviewPane {
         if entry.kind == FileKind::Directory {
             self.state.has_rendered_content.set(true);
             self.stack.set_visible_child_name("directory");
-            self.directory.load(&entry.location, |_| {});
+            let pane = self.clone();
+            let state = self.state.clone();
+            let used_cache = self.directory.load(&entry.location, move |_| {
+                if state.gate.borrow().accepts(generation) {
+                    state.loading.set(false);
+                    pane.spinner.stop();
+                }
+            });
+            if used_cache {
+                self.state.loading.set(false);
+                self.spinner.stop();
+            }
             return;
         }
 
@@ -295,6 +338,8 @@ impl PreviewPane {
                     content: Ok(content),
                 },
             );
+            self.state.loading.set(false);
+            self.spinner.stop();
             return;
         }
 

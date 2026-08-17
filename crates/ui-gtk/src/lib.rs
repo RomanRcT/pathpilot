@@ -1,4 +1,4 @@
-//! GTK composition for three-column local filesystem navigation.
+//! GTK composition for three-column local and GVfs-backed filesystem navigation.
 
 mod archive;
 mod directory_pane;
@@ -35,6 +35,10 @@ const DIRECTORY_MONITOR_DEBOUNCE: Duration = Duration::from_millis(150);
 enum PlaceTarget {
     FirstItem,
     Location(Location),
+    Remote {
+        scheme: &'static str,
+        label: &'static str,
+    },
 }
 
 #[derive(Clone)]
@@ -76,6 +80,8 @@ struct Browser {
     command_palette: RefCell<CommandPalette>,
     mode: RefCell<AppMode>,
     input_source: RefCell<Option<Location>>,
+    remote_input_scheme: RefCell<Option<String>>,
+    directory_loading: Cell<bool>,
     bookmark_key: Cell<Option<char>>,
     input_bar: gtk::Box,
     input_title: gtk::Label,
@@ -96,6 +102,7 @@ struct Browser {
     terminal_panel: gtk::Box,
     terminal_visible: Cell<bool>,
     terminal_running: Cell<bool>,
+    remote_mount: RefCell<Option<gio::Cancellable>>,
     terminal_button: RefCell<Option<gtk::ToggleButton>>,
     hidden_button: RefCell<Option<gtk::ToggleButton>>,
     directory_monitors: RefCell<Vec<gio::FileMonitor>>,
@@ -216,11 +223,17 @@ impl Browser {
         terminal_panel.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
         terminal_panel.append(&terminal);
         terminal_panel.set_visible(false);
+        let current = DirectoryPane::new("Current");
+        let preview = PreviewPane::new(
+            ui.preview_line_numbers,
+            ui.preview_delay_ms,
+            current.remote_cache(),
+        );
         Rc::new(Self {
             navigation: RefCell::new(NavigationState::new(initial)),
             parent: DirectoryPane::new("Parent"),
-            current: DirectoryPane::new("Current"),
-            preview: PreviewPane::new(ui.preview_line_numbers),
+            current,
+            preview,
             location_label: gtk::Label::builder()
                 .xalign(0.0)
                 .ellipsize(gtk::pango::EllipsizeMode::Middle)
@@ -238,6 +251,8 @@ impl Browser {
             command_palette: RefCell::new(CommandPalette::default()),
             mode: RefCell::new(AppMode::default()),
             input_source: RefCell::new(None),
+            remote_input_scheme: RefCell::new(None),
+            directory_loading: Cell::new(false),
             bookmark_key: Cell::new(None),
             input_bar,
             input_title,
@@ -262,6 +277,7 @@ impl Browser {
             terminal_panel,
             terminal_visible: Cell::new(false),
             terminal_running: Cell::new(false),
+            remote_mount: RefCell::new(None),
             terminal_button: RefCell::new(None),
             hidden_button: RefCell::new(None),
             directory_monitors: RefCell::new(Vec::new()),
@@ -420,6 +436,12 @@ impl Browser {
 
     fn start_terminal(self: &Rc<Self>) {
         let location = self.navigation.borrow().current().clone();
+        if !location.capabilities().local_processes {
+            self.status
+                .set_label("NORMAL  Terminal is available for local directories only");
+            self.hide_terminal();
+            return;
+        }
         let Some(directory) = gio::File::for_uri(location.uri()).path() else {
             self.status
                 .set_label("NORMAL  Terminal is available for local directories only");
@@ -465,8 +487,8 @@ impl Browser {
         self.reload_columns(None, None);
     }
 
-    fn selection_changed(self: &Rc<Self>, selected: u32) {
-        if self.editing.get() {
+    fn selection_changed(&self, selected: u32) {
+        if self.editing.get() || self.directory_loading.get() {
             return;
         }
         let total = self.current.selection.n_items();
@@ -517,7 +539,7 @@ impl Browser {
             .unwrap_or_default()
     }
 
-    fn update_preview(self: &Rc<Self>) {
+    fn update_preview(&self) {
         let Some(entry) = self.current.selected_entry() else {
             self.preview.show_empty();
             return;
@@ -699,7 +721,10 @@ impl Browser {
             settings.ui.window_height = window.height();
         }
         settings.ui.window_maximized = window.is_maximized();
-        settings.ui.last_location = Some(self.navigation.borrow().current().uri().to_owned());
+        let current = self.navigation.borrow().current().clone();
+        if gio::File::for_uri(current.uri()).is_native() {
+            settings.ui.last_location = Some(current.uri().to_owned());
+        }
         settings.ui.pane_layout = match self.pane_layout.get() {
             PaneLayout::Browse => "browse",
             PaneLayout::FocusPreview => "focus_preview",
@@ -1160,6 +1185,114 @@ impl Browser {
         }
     }
 
+    fn start_location_input(&self) {
+        let initial = self.navigation.borrow().current().uri().to_owned();
+        if self
+            .mode
+            .borrow_mut()
+            .begin_text_input(InputModeKind::LocationUri, &initial)
+        {
+            self.input_source.borrow_mut().take();
+            self.remote_input_scheme.borrow_mut().take();
+            self.input_entry
+                .set_placeholder_text(Some("sftp://host/path or smb://server/share"));
+            self.input_entry.set_text(&initial);
+            self.input_entry.select_region(0, -1);
+            self.show_input_bar();
+            self.status
+                .set_label("INPUT  Open location · Enter connect · Escape cancel");
+        }
+    }
+
+    fn start_remote_location_input(&self, scheme: &str, label: &str) {
+        if self
+            .mode
+            .borrow_mut()
+            .begin_text_input(InputModeKind::LocationUri, "")
+        {
+            self.input_source.borrow_mut().take();
+            *self.remote_input_scheme.borrow_mut() = Some(scheme.to_owned());
+            self.input_entry.set_placeholder_text(Some("host/path"));
+            self.input_entry.set_text("");
+            self.show_input_bar();
+            self.status.set_label(&format!(
+                "INPUT  Remote {label} host/path · Enter connect · Escape cancel"
+            ));
+        }
+    }
+
+    fn open_location(self: &Rc<Self>, value: &str) {
+        self.input_entry.set_placeholder_text(Some("Type a name…"));
+        let value = value.trim();
+        let file = if value.contains("://") {
+            gio::File::for_uri(value)
+        } else {
+            gio::File::for_commandline_arg(value)
+        };
+        let location = Location::new(file.uri());
+        if file.is_native() {
+            self.navigate_to(location, None);
+            return;
+        }
+        let current = self.navigation.borrow().current().clone();
+        if gio::File::for_uri(current.uri()).is_native() {
+            self.settings.borrow_mut().ui.last_location = Some(current.uri().to_owned());
+        }
+        let Some(window) = self
+            .current
+            .widget
+            .root()
+            .and_downcast::<adw::ApplicationWindow>()
+        else {
+            self.status
+                .set_label("NORMAL  Cannot open remote location without a window");
+            return;
+        };
+        if let Some(active) = self
+            .remote_mount
+            .borrow_mut()
+            .replace(gio::Cancellable::new())
+        {
+            active.cancel();
+        }
+        let cancellable = self
+            .remote_mount
+            .borrow()
+            .as_ref()
+            .expect("mount cancellable was installed")
+            .clone();
+        let operation = gtk::MountOperation::new(Some(&window));
+        let weak = Rc::downgrade(self);
+        self.status
+            .set_label(&format!("NORMAL  Connecting to {}…", location.uri()));
+        file.mount_enclosing_volume(
+            gio::MountMountFlags::NONE,
+            Some(&operation),
+            Some(&cancellable),
+            move |result| {
+                let Some(browser) = weak.upgrade() else {
+                    return;
+                };
+                browser.remote_mount.borrow_mut().take();
+                match result {
+                    Ok(()) => browser.navigate_to(location, None),
+                    Err(error) if error.matches(gio::IOErrorEnum::AlreadyMounted) => {
+                        browser.navigate_to(location, None);
+                    }
+                    Err(error) if error.matches(gio::IOErrorEnum::Cancelled) => {
+                        browser.status.set_label("NORMAL  Connection cancelled");
+                    }
+                    Err(error) => {
+                        warn!(%error, uri = location.uri(), "could not mount remote location");
+                        browser
+                            .status
+                            .set_label(&format!("NORMAL  Could not connect: {error}"));
+                    }
+                }
+            },
+        );
+    }
+
     fn show_input_bar(&self) {
         self.refresh_input_bar();
         self.input_bar.set_visible(true);
@@ -1187,6 +1320,7 @@ impl Browser {
     fn cancel_text_input(&self) {
         self.mode.borrow_mut().cancel();
         self.input_source.borrow_mut().take();
+        self.remote_input_scheme.borrow_mut().take();
         self.bookmark_key.take();
         self.input_entry.set_placeholder_text(Some("Type a name…"));
         self.hide_input_bar();
@@ -1265,6 +1399,14 @@ impl Browser {
                             .set_label(&format!("NORMAL  Could not save bookmark: {error}"));
                     }
                 }
+                return true;
+            }
+            InputModeKind::LocationUri => {
+                let value = match self.remote_input_scheme.borrow_mut().take() {
+                    Some(scheme) => remote_uri(&scheme, &value),
+                    None => value,
+                };
+                self.open_location(&value);
                 return true;
             }
         };
@@ -1448,6 +1590,7 @@ impl Browser {
 
     fn select_position(&self, position: u32) {
         self.current.select_position(position);
+        self.selection_changed(self.current.cursor_position());
     }
 
     fn open_entry(self: &Rc<Self>, entry: FileEntry) {
@@ -1547,6 +1690,11 @@ impl Browser {
         if !entry_is_editable_text(&entry) {
             self.status
                 .set_label("NORMAL  The selected file is not an editable text file");
+            return;
+        }
+        if !entry.location.capabilities().local_processes {
+            self.status
+                .set_label("NORMAL  Embedded editing currently supports local files only");
             return;
         }
         let file = gio::File::for_uri(entry.location.uri());
@@ -1884,13 +2032,27 @@ impl Browser {
         }
         self.location_label.set_tooltip_text(Some(location.uri()));
         self.status.set_label("NORMAL  Loading…");
+        self.directory_loading.set(true);
 
         let weak = Rc::downgrade(self);
-        self.current.load(&location, move |success| {
+        let is_remote = !gio::File::for_uri(location.uri()).is_native();
+        if is_remote {
+            self.load_cached_remote_parent(&location);
+        } else {
+            self.load_parent_column(&location);
+        }
+        info!(location = location.uri(), "navigation started");
+        let cached_preferred = preferred.clone();
+        let used_cache = self.current.load(&location, move |result| {
             let Some(browser) = weak.upgrade() else {
                 return;
             };
-            if !success {
+            browser.directory_loading.set(false);
+            if let Err(error) = result {
+                browser
+                    .status
+                    .set_label(&format!("NORMAL  Could not load location: {error}"));
+                browser.preview.show_location_error(&error);
                 return;
             }
             let selected_preferred = preferred
@@ -1903,22 +2065,52 @@ impl Browser {
             }
             browser.selection_changed(browser.current.cursor_position());
         });
+        if !used_cache {
+            self.preview.show_location_loading(&presentation.compact);
+        }
+        if used_cache {
+            self.directory_loading.set(false);
+            let selected_preferred = cached_preferred
+                .as_ref()
+                .is_some_and(|location| self.current.select_location(location));
+            if !selected_preferred {
+                self.current.select_position(restored_position.unwrap_or(0));
+            }
+            self.selection_changed(self.current.cursor_position());
+        }
+    }
 
+    fn load_parent_column(&self, location: &Location) {
         let file = gio::File::for_uri(location.uri());
         if let Some(parent_file) = file.parent() {
             let parent_location = Location::new(parent_file.uri());
             let current_location = location.clone();
             let parent_pane = self.parent.clone();
-            self.parent.load(&parent_location, move |success| {
-                if success {
+            self.parent.load(&parent_location, move |result| {
+                if result.is_ok() {
                     parent_pane.select_location(&current_location);
                 }
             });
         } else {
             self.parent.show_message("Parent", "Filesystem root");
         }
-        self.preview.show_empty();
-        info!(location = location.uri(), "navigation started");
+    }
+
+    fn load_cached_remote_parent(&self, location: &Location) {
+        let file = gio::File::for_uri(location.uri());
+        let Some(parent_file) = file.parent() else {
+            self.parent.show_message("Parent", "Remote root");
+            return;
+        };
+        let parent_location = Location::new(parent_file.uri());
+        if self.parent.load_cached(&parent_location) {
+            self.parent.select_location(location);
+        } else {
+            self.parent.show_message(
+                "Parent",
+                "Remote parent is not cached yet · Press h to load it",
+            );
+        }
     }
 
     fn start_directory_monitors(self: &Rc<Self>, location: &Location) {
@@ -1927,6 +2119,10 @@ impl Browser {
         self.monitor_generation.set(generation);
 
         let current = gio::File::for_uri(location.uri());
+        if !current.is_native() {
+            debug!(uri = %current.uri(), "remote directory monitoring disabled");
+            return;
+        }
         let mut files = vec![current.clone()];
         if let Some(parent) = current.parent() {
             files.push(parent);
@@ -1996,6 +2192,9 @@ impl Browser {
         self.git_status.set_visible(false);
         let generation = self.git_probe.get().wrapping_add(1);
         self.git_probe.set(generation);
+        if !location.capabilities().git {
+            return;
+        }
         let Some(path) = gio::File::for_uri(location.uri()).path() else {
             return;
         };
@@ -2040,6 +2239,9 @@ impl Browser {
 
     fn cancel(&self) {
         self.cancel_active_operation();
+        if let Some(mount) = self.remote_mount.borrow_mut().take() {
+            mount.cancel();
+        }
         self.stop_directory_monitors();
         self.parent.cancel();
         self.current.cancel();
@@ -2064,11 +2266,15 @@ pub fn build_window(app: &adw::Application) -> adw::ApplicationWindow {
         .last_location
         .as_ref()
         .map_or_else(fallback, |uri| {
-            let file = gio::File::for_uri(uri);
-            if file.query_exists(None::<&gio::Cancellable>) {
-                Location::new(uri.clone())
-            } else {
+            if !uri.starts_with("file:") {
                 fallback()
+            } else {
+                let file = gio::File::for_uri(uri);
+                if file.query_exists(None::<&gio::Cancellable>) {
+                    Location::new(uri.clone())
+                } else {
+                    fallback()
+                }
             }
         });
     let window_width = settings.ui.window_width;
@@ -2284,6 +2490,24 @@ fn default_places(bookmarks: &[pathpilot_config::Bookmark]) -> Vec<PlaceBinding>
         label: "Filesystem root".to_owned(),
         target: PlaceTarget::Location(Location::new(gio::File::for_path("/").uri())),
     });
+    places.extend([
+        PlaceBinding {
+            key: 'l',
+            label: "Connect to Linux / SFTP".to_owned(),
+            target: PlaceTarget::Remote {
+                scheme: "sftp",
+                label: "Linux/SFTP",
+            },
+        },
+        PlaceBinding {
+            key: 'w',
+            label: "Connect to Windows / SMB".to_owned(),
+            target: PlaceTarget::Remote {
+                scheme: "smb",
+                label: "Windows/SMB",
+            },
+        },
+    ]);
     places.extend(bookmarks.iter().filter_map(|bookmark| {
         Some(PlaceBinding {
             key: bookmark.key.chars().next()?,
@@ -2318,6 +2542,8 @@ fn install_keyboard_controller(
     reference.retain(|(keys, _)| !keys.starts_with('g'));
     reference.extend([
         ("b".to_owned(), "Bookmark current directory"),
+        ("Ctrl+L".to_owned(), "Open location URI"),
+        ("Ctrl+R".to_owned(), "Reload current directory"),
         ("e".to_owned(), "Edit in Neovim"),
         ("f".to_owned(), "Find by name"),
         ("Space".to_owned(), "Toggle selection"),
@@ -2475,6 +2701,26 @@ fn install_keyboard_controller(
             }
             return glib::Propagation::Stop;
         }
+        if key == gdk::Key::l && modifiers.contains(gdk::ModifierType::CONTROL_MASK) {
+            parser.borrow_mut().reset();
+            key_hints.set_visible(false);
+            if let Some(browser) = browser.upgrade() {
+                browser.start_location_input();
+            }
+            return glib::Propagation::Stop;
+        }
+        if key == gdk::Key::r && modifiers.contains(gdk::ModifierType::CONTROL_MASK) {
+            parser.borrow_mut().reset();
+            key_hints.set_visible(false);
+            if let Some(browser) = browser.upgrade() {
+                let current = browser.navigation.borrow().current().clone();
+                browser.current.invalidate_cache(&current);
+                let preferred = browser.current.selected_entry().map(|entry| entry.location);
+                let position = browser.current.cursor_position();
+                browser.reload_columns(preferred, Some(position));
+            }
+            return glib::Propagation::Stop;
+        }
         let opens_command_palette = key.to_unicode() == Some(':')
             || (matches!(key, gdk::Key::p | gdk::Key::P)
                 && modifiers
@@ -2617,7 +2863,16 @@ fn install_keyboard_controller(
                     match &place.target {
                         PlaceTarget::FirstItem => browser.select_position(0),
                         PlaceTarget::Location(location) => {
-                            browser.navigate_to(location.clone(), None)
+                            if gio::File::for_uri(location.uri()).is_native() {
+                                browser.navigate_to(location.clone(), None);
+                            } else {
+                                browser.open_location(location.uri());
+                            }
+                        }
+                        PlaceTarget::Remote { scheme, label } => {
+                            browser.start_remote_location_input(scheme, label);
+                            key_hints.set_visible(false);
+                            return glib::Propagation::Stop;
                         }
                     }
                     restore_hint_panel(&key_hints, hints_enabled.get(), &command_reference);
@@ -2924,6 +3179,10 @@ fn content_type_is_editable(content_type: &str) -> bool {
         )
 }
 
+fn remote_uri(scheme: &str, location: &str) -> String {
+    format!("{scheme}://{}", location.trim())
+}
+
 fn selection_summary(entries: &[FileEntry]) -> String {
     const MAX_NAMES: usize = 3;
     let mut names = entries
@@ -3063,5 +3322,14 @@ mod tests {
     fn formats_permissions_and_sizes_compactly() {
         assert_eq!(format_permissions(0o100754), "rwxr-xr--");
         assert_eq!(compact_size(1_536), "1.5 KiB");
+    }
+
+    #[test]
+    fn adds_the_selected_scheme_to_remote_input() {
+        assert_eq!(
+            remote_uri("sftp", "host/home/user"),
+            "sftp://host/home/user"
+        );
+        assert_eq!(remote_uri("smb", " server/share "), "smb://server/share");
     }
 }

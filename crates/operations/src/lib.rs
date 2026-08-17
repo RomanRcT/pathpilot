@@ -1,4 +1,4 @@
-//! Safe, cancelable GIO primitives for mutating local filesystem operations.
+//! Safe, cancelable GIO primitives for local and GVfs-backed filesystem operations.
 
 use futures_util::StreamExt;
 use gio::prelude::*;

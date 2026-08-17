@@ -16,13 +16,14 @@ PathPilot requires GTK 4.12 or newer, libadwaita 1.5 or newer, and GTK4 VTE.
 - Three live parent/current/preview columns with independently cancelable models.
 - Virtualized `GtkListView` instances populated asynchronously through GIO.
 - Batched GIO enumeration with cancellation and stale-generation rejection.
-- Live current/parent directory monitoring with debounced automatic refresh.
+- Bounded LRU caching for responsive revisits to remote directories.
+- Live local current/parent directory monitoring with debounced automatic refresh.
 - Name, native content-type icon, kind, size, and modified-time columns.
 - Case-insensitive name sorting with directories first.
 - `h/j/k/l`, `gg`, and `G` navigation with cursor restoration per directory.
 - `q` closes the current window.
 - Single-click selection and double-click directory/file opening.
-- Preview requests are debounced by 75 ms, cancelable, and generation-checked.
+- Preview requests use a configurable 75 ms debounce, are cancelable, and generation-checked.
 - Bounded text previews and asynchronously decoded, viewport-scaled image previews.
 - Empty files have an explicit empty state; YAML MIME variants are treated as text.
 - Source previews are syntax-highlighted off the GTK thread with `syntect`.
@@ -45,6 +46,7 @@ PathPilot requires GTK 4.12 or newer, libadwaita 1.5 or newer, and GTK4 VTE.
 - Browse, focused-preview, and preview-only layouts cycled with `z`.
 - Filename search with `f`, Enter, `n`, and `N`.
 - `g` places for Home, Downloads, root, and configurable bookmarks.
+- Remote SFTP and SMB navigation through GIO/GVfs with native authentication dialogs.
 - Text clipboard commands for filenames, directory paths, and full paths.
 - MIME-aware Open With history backed by the native GTK/GNOME application chooser.
 - Embedded Neovim editing for local text files through a GTK4 VTE terminal.
@@ -78,14 +80,17 @@ directory and `h` to return to its parent.
 | `u` / `Escape` | Load full syntax preview / cancel loading |
 | `e` | Edit a local text file in embedded Neovim |
 | `b` | Bookmark the current directory and choose its `g` key |
+| `g l` / `g w` | Connect to a Linux/SFTP or Windows/SMB host |
+| `Ctrl+L` | Open a local path or remote URI such as `sftp://` or `smb://` |
+| `Ctrl+R` | Reload the current directory (including remote locations) |
 | `:` / `F1` | Command palette / command reference |
 
 ## Current limitations
 
-- Local filesystem browsing and embedded editing only; non-local GIO backends are not complete.
+- Remote image previews, archives, Git integration, terminal, and embedded editing are local-only.
 - No tabs or general-purpose filtering yet.
 - No PDF, archive, office document, audio, or video previews.
-- No remote filesystem backends or plugin API.
+- Remote browsing requires the matching GVfs backend to be installed on the host.
 - Embedded editing requires `nvim` and currently accepts local text files only.
 - Fedora and Wayland are the primary development targets; other Linux environments are not yet validated.
 
@@ -125,7 +130,7 @@ access to the Flatpak portal service.
 Install the native dependencies:
 
 ```bash
-sudo dnf install rust cargo gtk4-devel libadwaita-devel vte291-gtk4-devel gcc pkgconf-pkg-config neovim 7zip
+sudo dnf install rust cargo gtk4-devel libadwaita-devel vte291-gtk4-devel gcc pkgconf-pkg-config neovim 7zip gvfs gvfs-smb
 ```
 
 Build and run:
@@ -189,6 +194,7 @@ Preview line numbers and the application color scheme can be configured under
 
 ```toml
 [ui]
+preview_delay_ms = 75    # wait before loading the selected item's preview
 preview_line_numbers = true
 color_scheme = "system" # system, light, or dark
 sort_key = "name"       # name, extension, size, or modified

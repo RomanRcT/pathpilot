@@ -1,21 +1,112 @@
 use std::{
     cell::{Cell, RefCell},
-    collections::HashSet,
+    collections::{HashMap, HashSet, VecDeque},
     rc::Rc,
     time::{Instant, SystemTime, UNIX_EPOCH},
 };
 
 use gtk::{gio, glib, prelude::*};
 use pathpilot_core::{
-    FileEntry, FileKind, GenerationTracker, Location, SortMode, present_location,
+    FileEntry, FileKind, Generation, GenerationTracker, Location, SortMode, present_location,
 };
 use pathpilot_fs_local::{DirectoryEvent, load_directory};
 use tracing::{debug, info, warn};
+
+const REMOTE_CACHE_CAPACITY: usize = 32;
+
+#[derive(Default)]
+pub(crate) struct DirectoryCache {
+    entries: HashMap<String, Vec<FileEntry>>,
+    order: VecDeque<String>,
+    in_flight: HashMap<String, InFlightDirectory>,
+    next_subscriber: u64,
+}
+
+pub(crate) type SharedDirectoryCache = Rc<RefCell<DirectoryCache>>;
+type RemoteLoadSubscriber = Box<dyn Fn(Result<Vec<FileEntry>, String>)>;
+
+struct InFlightDirectory {
+    subscribers: HashMap<u64, RemoteLoadSubscriber>,
+}
+
+impl DirectoryCache {
+    fn get(&mut self, uri: &str) -> Option<Vec<FileEntry>> {
+        let entries = self.entries.get(uri)?.clone();
+        self.order.retain(|existing| existing != uri);
+        self.order.push_back(uri.to_owned());
+        Some(entries)
+    }
+
+    fn insert(&mut self, uri: String, entries: Vec<FileEntry>) {
+        self.order.retain(|existing| existing != &uri);
+        self.order.push_back(uri.clone());
+        self.entries.insert(uri, entries);
+        while self.order.len() > REMOTE_CACHE_CAPACITY {
+            if let Some(expired) = self.order.pop_front() {
+                self.entries.remove(&expired);
+            }
+        }
+    }
+
+    fn remove(&mut self, uri: &str) {
+        self.entries.remove(uri);
+        self.order.retain(|existing| existing != uri);
+    }
+
+    fn subscribe(
+        &mut self,
+        uri: &str,
+        subscriber: RemoteLoadSubscriber,
+    ) -> Result<u64, RemoteLoadSubscriber> {
+        let Some(load) = self.in_flight.get_mut(uri) else {
+            return Err(subscriber);
+        };
+        let id = self.next_subscriber;
+        self.next_subscriber = self.next_subscriber.wrapping_add(1);
+        load.subscribers.insert(id, subscriber);
+        Ok(id)
+    }
+
+    fn begin(&mut self, uri: String, subscriber: RemoteLoadSubscriber) -> u64 {
+        let id = self.next_subscriber;
+        self.next_subscriber = self.next_subscriber.wrapping_add(1);
+        self.in_flight.insert(
+            uri,
+            InFlightDirectory {
+                subscribers: HashMap::from([(id, subscriber)]),
+            },
+        );
+        id
+    }
+
+    fn unsubscribe(&mut self, uri: &str, id: u64) {
+        let became_orphaned = self.in_flight.get_mut(uri).is_some_and(|load| {
+            load.subscribers.remove(&id);
+            load.subscribers.is_empty()
+        });
+        if became_orphaned {
+            debug!(
+                location = uri,
+                "remote directory load continuing as cache prefetch"
+            );
+        }
+    }
+
+    fn finish(&mut self, uri: &str) -> Vec<RemoteLoadSubscriber> {
+        self.in_flight
+            .remove(uri)
+            .map(|load| load.subscribers.into_values().collect())
+            .unwrap_or_default()
+    }
+}
 
 #[derive(Default)]
 struct LoadState {
     generation: RefCell<GenerationTracker>,
     cancellable: RefCell<Option<gio::Cancellable>>,
+    pending_entries: RefCell<Vec<FileEntry>>,
+    serving_cache: Cell<bool>,
+    remote_subscription: RefCell<Option<(String, u64)>>,
 }
 
 #[derive(Clone)]
@@ -30,6 +121,7 @@ pub struct DirectoryPane {
     role: String,
     status: gtk::Label,
     load_state: Rc<LoadState>,
+    remote_cache: SharedDirectoryCache,
     cursor: Rc<Cell<u32>>,
     visual_anchor: Rc<Cell<Option<u32>>>,
     changing_selection: Rc<Cell<bool>>,
@@ -41,6 +133,10 @@ pub struct DirectoryPane {
 
 impl DirectoryPane {
     pub fn new(role: &str) -> Self {
+        Self::with_remote_cache(role, Rc::new(RefCell::new(DirectoryCache::default())))
+    }
+
+    pub(crate) fn with_remote_cache(role: &str, remote_cache: SharedDirectoryCache) -> Self {
         let store = gio::ListStore::new::<glib::BoxedAnyObject>();
         let sort_mode = Rc::new(Cell::new(SortMode::default()));
         let sorter = gtk::CustomSorter::new({
@@ -177,6 +273,7 @@ impl DirectoryPane {
             role: role.to_owned(),
             status,
             load_state: Rc::new(LoadState::default()),
+            remote_cache,
             cursor,
             visual_anchor,
             changing_selection,
@@ -202,7 +299,11 @@ impl DirectoryPane {
         }
     }
 
-    pub fn load(&self, location: &Location, on_finished: impl Fn(bool) + 'static) {
+    pub fn load(
+        &self,
+        location: &Location,
+        on_finished: impl Fn(Result<(), String>) + 'static,
+    ) -> bool {
         self.cancel();
         self.store.remove_all();
         self.independent_selection.set(false);
@@ -216,12 +317,40 @@ impl DirectoryPane {
         self.title
             .set_label(&format!("{}  {}", self.role, presentation.compact));
         self.title.set_tooltip_text(Some(&presentation.full));
-        self.status.set_label("Loading…");
+        let location_uri = location.uri().to_owned();
+        let is_remote = !gio::File::for_uri(&location_uri).is_native();
+        let cached = is_remote
+            .then(|| self.remote_cache.borrow_mut().get(&location_uri))
+            .flatten();
+        let used_cache = cached.is_some();
+        self.load_state.pending_entries.borrow_mut().clear();
+        self.load_state.serving_cache.set(cached.is_some());
+        if let Some(entries) = cached {
+            info!(
+                location = location_uri,
+                pane = self.role,
+                entry_count = entries.len(),
+                "remote directory cache hit"
+            );
+            let objects = self.visible_objects(entries);
+            self.store.extend_from_slice(&objects);
+            self.status.set_label(&format!(
+                "{} cached entries · Ctrl+R refreshes",
+                self.store.n_items()
+            ));
+            return true;
+        } else {
+            self.status.set_label("Loading…");
+        }
         let generation = self.load_state.generation.borrow_mut().advance();
         let started = Instant::now();
-        let location_uri = location.uri().to_owned();
-        let on_finished: Rc<dyn Fn(bool)> = Rc::new(on_finished);
+        let on_finished: Rc<dyn Fn(Result<(), String>)> = Rc::new(on_finished);
         let pane = self.clone();
+
+        if is_remote {
+            self.load_remote(location, location_uri, generation, started, on_finished);
+            return false;
+        }
 
         let cancellable = load_directory(
             location,
@@ -252,17 +381,35 @@ impl DirectoryPane {
 
                     match event {
                         DirectoryEvent::Batch { entries, .. } => {
-                            let objects: Vec<_> = entries
-                                .into_iter()
-                                .filter(|entry| pane.show_hidden.get() || !entry.is_hidden)
-                                .map(glib::BoxedAnyObject::new)
-                                .collect();
-                            pane.store.extend_from_slice(&objects);
+                            pane.load_state
+                                .pending_entries
+                                .borrow_mut()
+                                .extend(entries.iter().cloned());
+                            if !pane.load_state.serving_cache.get() {
+                                let objects = pane.visible_objects(entries);
+                                pane.store.extend_from_slice(&objects);
+                            }
                             pane.status
                                 .set_label(&format!("Loading… {} entries", pane.store.n_items()));
                         }
                         DirectoryEvent::Finished { .. } => {
                             pane.load_state.cancellable.borrow_mut().take();
+                            let entries = pane
+                                .load_state
+                                .pending_entries
+                                .borrow_mut()
+                                .drain(..)
+                                .collect::<Vec<_>>();
+                            if is_remote {
+                                pane.remote_cache
+                                    .borrow_mut()
+                                    .insert(location_uri.clone(), entries.clone());
+                            }
+                            if pane.load_state.serving_cache.replace(false) {
+                                pane.store.remove_all();
+                                let objects = pane.visible_objects(entries);
+                                pane.store.extend_from_slice(&objects);
+                            }
                             pane.status
                                 .set_label(&format!("{} entries", pane.store.n_items()));
                             info!(
@@ -270,9 +417,10 @@ impl DirectoryPane {
                                 entry_count = pane.store.n_items(),
                                 elapsed_ms = started.elapsed().as_millis(),
                                 location = location_uri,
+                                pane = pane.role,
                                 "directory pane load finished"
                             );
-                            on_finished(true);
+                            on_finished(Ok(()));
                         }
                         DirectoryEvent::Failed { message, .. } => {
                             pane.load_state.cancellable.borrow_mut().take();
@@ -283,13 +431,148 @@ impl DirectoryPane {
                                 error = message,
                                 "directory pane load failed"
                             );
-                            on_finished(false);
+                            on_finished(Err(message));
                         }
                     }
                 }
             ),
         );
         *self.load_state.cancellable.borrow_mut() = Some(cancellable);
+        used_cache
+    }
+
+    pub fn load_cached(&self, location: &Location) -> bool {
+        self.cancel();
+        self.store.remove_all();
+        self.independent_selection.set(false);
+        self.independent_selected.borrow_mut().clear();
+        let Some(entries) = self.remote_cache.borrow_mut().get(location.uri()) else {
+            return false;
+        };
+        let presentation = present_location(
+            location,
+            std::env::var_os("HOME")
+                .as_deref()
+                .map(std::path::Path::new),
+        );
+        self.title
+            .set_label(&format!("{}  {}", self.role, presentation.compact));
+        self.title.set_tooltip_text(Some(&presentation.full));
+        let entry_count = entries.len();
+        let objects = self.visible_objects(entries);
+        self.store.extend_from_slice(&objects);
+        self.status
+            .set_label(&format!("{} cached entries", self.store.n_items()));
+        info!(
+            location = location.uri(),
+            pane = self.role,
+            entry_count,
+            "remote parent cache hit"
+        );
+        true
+    }
+
+    fn load_remote(
+        &self,
+        location: &Location,
+        location_uri: String,
+        generation: Generation,
+        started: Instant,
+        on_finished: Rc<dyn Fn(Result<(), String>)>,
+    ) {
+        let pane = self.clone();
+        let subscriber: RemoteLoadSubscriber = Box::new(move |result| {
+            pane.load_state.remote_subscription.borrow_mut().take();
+            if !pane.load_state.generation.borrow().accepts(generation) {
+                debug!(
+                    generation = generation.value(),
+                    location = location_uri,
+                    pane = pane.role,
+                    "discarding stale shared directory result"
+                );
+                return;
+            }
+
+            match result {
+                Ok(entries) => {
+                    pane.store.remove_all();
+                    let objects = pane.visible_objects(entries);
+                    pane.store.extend_from_slice(&objects);
+                    pane.status
+                        .set_label(&format!("{} entries", pane.store.n_items()));
+                    info!(
+                        generation = generation.value(),
+                        entry_count = pane.store.n_items(),
+                        elapsed_ms = started.elapsed().as_millis(),
+                        location = location_uri,
+                        pane = pane.role,
+                        "directory pane load finished"
+                    );
+                    on_finished(Ok(()));
+                }
+                Err(message) => {
+                    pane.status.set_label(&format!("Could not load: {message}"));
+                    warn!(
+                        generation = generation.value(),
+                        location = location_uri,
+                        pane = pane.role,
+                        error = message,
+                        "directory pane load failed"
+                    );
+                    on_finished(Err(message));
+                }
+            }
+        });
+
+        let subscriber = match self
+            .remote_cache
+            .borrow_mut()
+            .subscribe(location.uri(), subscriber)
+        {
+            Ok(id) => {
+                *self.load_state.remote_subscription.borrow_mut() =
+                    Some((location.uri().to_owned(), id));
+                info!(
+                    location = location.uri(),
+                    pane = self.role,
+                    "joined in-flight remote directory load"
+                );
+                return;
+            }
+            Err(subscriber) => subscriber,
+        };
+
+        let subscriber_id = self
+            .remote_cache
+            .borrow_mut()
+            .begin(location.uri().to_owned(), subscriber);
+        *self.load_state.remote_subscription.borrow_mut() =
+            Some((location.uri().to_owned(), subscriber_id));
+        let entries = Rc::new(RefCell::new(Vec::new()));
+        let remote_cache = self.remote_cache.clone();
+        let request_uri = location.uri().to_owned();
+        let _ = load_directory(location, generation, move |event| match event {
+            DirectoryEvent::Batch { entries: batch, .. } => {
+                entries.borrow_mut().extend(batch);
+            }
+            DirectoryEvent::Finished { .. } => {
+                let result_entries = entries.borrow_mut().drain(..).collect::<Vec<_>>();
+                let subscribers = {
+                    let mut cache = remote_cache.borrow_mut();
+                    cache.insert(request_uri.clone(), result_entries.clone());
+                    cache.finish(&request_uri)
+                };
+                for subscriber in subscribers {
+                    subscriber(Ok(result_entries.clone()));
+                }
+            }
+            DirectoryEvent::Failed { message, .. } => {
+                let subscribers = remote_cache.borrow_mut().finish(&request_uri);
+                for subscriber in subscribers {
+                    subscriber(Err(message.clone()));
+                }
+            }
+        });
     }
 
     pub fn show_message(&self, title: &str, message: &str) {
@@ -300,7 +583,27 @@ impl DirectoryPane {
         self.status.set_label(message);
     }
 
+    pub fn invalidate_cache(&self, location: &Location) {
+        self.remote_cache.borrow_mut().remove(location.uri());
+    }
+
+    pub(crate) fn remote_cache(&self) -> SharedDirectoryCache {
+        self.remote_cache.clone()
+    }
+
+    fn visible_objects(&self, entries: Vec<FileEntry>) -> Vec<glib::BoxedAnyObject> {
+        entries
+            .into_iter()
+            .filter(|entry| self.show_hidden.get() || !entry.is_hidden)
+            .map(glib::BoxedAnyObject::new)
+            .collect()
+    }
+
     pub fn cancel(&self) {
+        self.load_state.generation.borrow_mut().advance();
+        if let Some((uri, id)) = self.load_state.remote_subscription.borrow_mut().take() {
+            self.remote_cache.borrow_mut().unsubscribe(&uri, id);
+        }
         if let Some(cancellable) = self.load_state.cancellable.borrow_mut().take() {
             cancellable.cancel();
         }
@@ -641,5 +944,48 @@ mod tests {
         assert_eq!(format_size(None), "—");
         assert_eq!(format_size(Some(512)), "512 B");
         assert_eq!(format_size(Some(1536)), "1.5 KiB");
+    }
+
+    #[test]
+    fn remote_directory_cache_is_bounded_and_promotes_hits() {
+        let mut cache = DirectoryCache::default();
+        for index in 0..REMOTE_CACHE_CAPACITY {
+            cache.insert(format!("smb://server/{index}"), Vec::new());
+        }
+        assert!(cache.get("smb://server/0").is_some());
+
+        cache.insert("smb://server/new".to_owned(), Vec::new());
+
+        assert!(cache.get("smb://server/0").is_some());
+        assert!(cache.get("smb://server/1").is_none());
+        assert_eq!(cache.entries.len(), REMOTE_CACHE_CAPACITY);
+    }
+
+    #[test]
+    fn remote_directory_loads_share_in_flight_subscribers() {
+        let mut cache = DirectoryCache::default();
+        let notifications = Rc::new(Cell::new(0));
+        let first_notifications = notifications.clone();
+        cache.begin(
+            "smb://server/folder".to_owned(),
+            Box::new(move |_| first_notifications.set(first_notifications.get() + 1)),
+        );
+        let second_notifications = notifications.clone();
+        assert!(
+            cache
+                .subscribe(
+                    "smb://server/folder",
+                    Box::new(move |_| second_notifications.set(second_notifications.get() + 1)),
+                )
+                .is_ok()
+        );
+
+        let subscribers = cache.finish("smb://server/folder");
+        assert_eq!(subscribers.len(), 2);
+        for subscriber in subscribers {
+            subscriber(Ok(Vec::new()));
+        }
+        assert_eq!(notifications.get(), 2);
+        assert!(cache.finish("smb://server/folder").is_empty());
     }
 }

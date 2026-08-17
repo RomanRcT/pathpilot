@@ -19,6 +19,8 @@ BuildRequires:  pkgconfig(gtk4) >= 4.12
 BuildRequires:  pkgconfig(vte-2.91-gtk4)
 BuildRequires:  rust
 Recommends:     neovim
+Recommends:     gvfs
+Recommends:     gvfs-smb
 Requires:       7zip
 
 %description
