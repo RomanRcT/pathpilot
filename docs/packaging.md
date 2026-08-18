@@ -28,5 +28,6 @@ user's existing configuration and plugins.
 `.github/workflows/release-packages.yml` builds both formats on packaging pull
 requests. Tag pushes and manual runs additionally generate `SHA256SUMS` and
 upload the packages to the selected GitHub Release. Manual dispatch is used to
-attach the first package set to the existing `v0.1.0` release without moving its
-tag.
+rebuild or replace package assets for an existing tag without moving the tag.
+The workflow verifies that the tag, Cargo workspace version, RPM spec, and
+latest AppStream release agree before starting either package build.

@@ -33,7 +33,7 @@ Every operation has an `OperationId`, typed `OperationKind`, state, progress fie
 - `x` or `Ctrl+X` stores the selected item for moving;
 - `p` or `Ctrl+V` pastes into the current directory.
 
-`F1` toggles a persistent, column-aligned reference containing the top-level commands. Pressing a sequence prefix replaces it with the valid continuations for that prefix, and completing or cancelling the sequence restores the main reference. The semi-transparent foreground hint does not consume layout space or disappear on a timer.
+`F1` or `?` toggles a persistent, column-aligned reference containing the top-level commands. Pressing a sequence prefix replaces it with the valid continuations for that prefix, and completing or cancelling the sequence restores the main reference. The semi-transparent foreground hint does not consume layout space or disappear on a timer.
 
 The `/` binding remains reserved for a future directory-filtering mode.
 

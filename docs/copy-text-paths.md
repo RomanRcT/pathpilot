@@ -14,6 +14,6 @@ without shell quoting, and leave the operation clipboard unchanged. Local
 `file://` locations are decoded to ordinary filesystem paths; other backends
 remain URIs.
 
-All four continuations appear in the pending hint panel, F1 reference, and
+All four continuations appear in the pending hint panel, F1/`?` reference, and
 command palette. The corresponding configurable keymap command names are
 `copy`, `copy_name`, `copy_directory_path`, and `copy_full_path`.

@@ -18,13 +18,15 @@ Completed remote directory listings are kept in a bounded in-memory cache.
 The preview pane prefetches the selected directory, navigation reuses an
 in-flight prefetch, and the parent pane displays a cached parent immediately
 without starting another network request. Press `Ctrl+R` to explicitly reload
-the current remote directory.
+the current remote directory. Successful copy, move, create, rename, and delete
+operations invalidate the current listing automatically.
 
 Directory browsing, text preview, bookmarks, create, rename, copy, move, and
 delete use the same GIO operations as local files. Actual capabilities still
-depend on the server and backend. For example, a server may reject writes or
-the Trash operation even though browsing succeeds. Errors are shown in the
-status line and operations remain cancellable.
+depend on the server and backend. Remote GVfs backends generally do not expose
+a Trash implementation, so `d d` opens the same explicit permanent-delete
+confirmation as `d D`. Errors are shown in the status line and long copy and
+delete operations remain cancellable in the non-modal operation shelf.
 
 Features that launch local processes or require native paths remain disabled
 for remote locations: the embedded terminal, Neovim, Git status, archive

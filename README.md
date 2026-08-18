@@ -5,9 +5,9 @@ GTK 4, libadwaita, and GIO. It combines ranger-style three-column navigation,
 Vim-inspired controls, conventional mouse interaction, responsive previews,
 an embedded shell, and an embedded Neovim editor.
 
-`v0.2.0` is the current preview release. The core local-file workflow is usable,
-but remote filesystems, accessibility review, and broader desktop validation
-are still in progress. See
+`v0.3.0` is the current preview release. The local-file workflow and core
+SFTP/SMB operations are usable, while accessibility review and broader desktop
+validation are still in progress. See
 [`pathpilot_project_plan.md`](pathpilot_project_plan.md) for the long-term plan.
 PathPilot requires GTK 4.12 or newer, libadwaita 1.5 or newer, and GTK4 VTE.
 
@@ -69,7 +69,7 @@ directory and `h` to return to its parent.
 | `a f` / `a d` / `r` | Create file / create directory / rename |
 | `y y` / `x` / `p` | Copy / cut / paste filesystem items |
 | `y n` / `y d` / `y p` | Copy name / directory path / full path as text |
-| `d d` / `d D` | Trash / permanently delete |
+| `d d` / `d D` | Trash / permanently delete (`d d` confirms permanent deletion on remote filesystems) |
 | `v` | Toggle Visual selection |
 | `g h` / `g d` / `g r` | Home / Downloads / filesystem root |
 | `o e` / `o 1`…`o 9` | System Open With chooser / saved application |
@@ -84,7 +84,7 @@ directory and `h` to return to its parent.
 | `g l` / `g w` | Connect to a Linux/SFTP or Windows/SMB host |
 | `Ctrl+L` | Open a local path or remote URI such as `sftp://` or `smb://` |
 | `Ctrl+R` | Reload the current directory (including remote locations) |
-| `:` / `F1` | Command palette / command reference |
+| `:` / `F1` / `?` | Command palette / toggle command reference |
 
 ## Current limitations
 
@@ -99,9 +99,9 @@ directory and `h` to return to its parent.
 
 The next major steps are:
 
-1. Improve batch conflict policies and surface a richer operation summary.
-2. Add drag-and-drop, accessibility, diagnostics, and remote GIO workflows.
-3. Complete Fedora packaging and performance regression coverage.
+1. Improve cross-backend move progress, batch conflict policies, and operation summaries.
+2. Add drag-and-drop, accessibility, and diagnostics.
+3. Expand desktop validation and performance regression coverage.
 
 Detailed phases, performance targets, and exit criteria are maintained in [`pathpilot_project_plan.md`](pathpilot_project_plan.md).
 
@@ -111,13 +111,13 @@ Download release assets from the GitHub Releases page. On Fedora, install the
 RPM with dependency resolution:
 
 ```bash
-sudo dnf install ./pathpilot-0.2.0-1.*.x86_64.rpm
+sudo dnf install ./pathpilot-0.3.0-1.*.x86_64.rpm
 ```
 
 Install the single-file Flatpak bundle with:
 
 ```bash
-flatpak install --user ./PathPilot-0.2.0-x86_64.flatpak
+flatpak install --user ./PathPilot-0.3.0-x86_64.flatpak
 flatpak run io.github.RomanRcT.PathPilot
 ```
 
@@ -181,7 +181,7 @@ rpmbuild -ba packaging/rpm/pathpilot.spec
 The binary RPM is written to `~/rpmbuild/RPMS/x86_64/`. GitHub release builds
 use the same source archive and spec, and attach both the binary and source RPM
 to the tagged release. To publish packages, push a matching version tag such
-as `v0.2.0`; the workflow can also be started manually for an existing tag.
+as `v0.3.0`; the workflow can also be started manually for an existing tag.
 
 User settings are stored under `${XDG_CONFIG_HOME:-~/.config}/pathpilot/`.
 `config.toml` contains UI state, `bookmarks.toml` contains places for the `g`

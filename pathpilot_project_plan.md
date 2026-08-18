@@ -9,19 +9,18 @@
 **Desktop integration:** GIO / GLib / FreeDesktop specifications  
 **License:** GPL-3.0-or-later
 
-### Current implementation status (2026-08-06)
+### Current implementation status (2026-08-17)
 
-The v0.1.x codebase has completed the navigation, preview, file-operation, and
-input foundations described below. It also includes packaged RPM/Flatpak
-artifacts, libadwaita integration, configurable light/dark appearance,
-show/hide hidden files, theme-aware previews with line numbers, embedded
-Neovim, an embedded shell terminal synchronized with browser navigation, and
-debounced monitoring of the active and parent directories.
-Directory sorting is configurable and available through Vim-style `s` commands.
-Normal-mode `Space` selection is available for discontiguous file sets; Visual
-mode remains the contiguous-range workflow.
-Tabs, general filtering, drag-and-drop, remote GIO workflows, and richer
-document previews remain planned work.
+The v0.3.x codebase has completed the navigation, preview, file-operation, and
+input foundations described below. It includes packaged RPM/Flatpak artifacts,
+libadwaita integration, configurable appearance, hidden-file controls,
+theme-aware previews, embedded Neovim, an embedded shell terminal, directory
+monitoring and sorting, discontiguous selection, and editable archive sessions.
+SFTP and SMB browsing and file operations are available through GIO/GVfs with
+bounded directory caching and prefetch. Copy and permanent-delete operations
+use a non-modal progress shelf with cancellation. Tabs, general filtering,
+drag-and-drop, broader remote protocols, and richer document previews remain
+planned work.
 
 ---
 
@@ -163,11 +162,11 @@ Keyboard focus must remain predictable after mouse interactions.
 
 ### 4.2 Explicitly Deferred
 
-- SMB, SFTP, FTP, WebDAV, and cloud storage.
+- FTP, WebDAV, and cloud storage beyond the implemented SFTP and SMB backends.
 - Full filesystem indexing.
 - Content search across the entire disk.
 - Plugin API.
-- Archive modification.
+- Broader archive format and remote-archive support beyond implemented local archive sessions.
 - Git status overlays.
 - PDF preview.
 - Office document preview.

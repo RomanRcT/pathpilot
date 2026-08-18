@@ -16,17 +16,37 @@ on:
       tag:
         description: Existing GitHub release tag to receive the packages
         required: true
-        default: v0.2.0
+        default: v0.3.0
 
 permissions:
   contents: write
 
 env:
-  RELEASE_TAG: ${{ github.event_name == 'pull_request' && 'v0.2.0' || (github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name) }}
+  RELEASE_TAG: ${{ github.event_name == 'pull_request' && 'v0.3.0' || (github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name) }}
 
 jobs:
+  validate:
+    name: Validate release metadata
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Compare tag and package versions
+        shell: bash
+        run: |
+          set -euo pipefail
+          expected="${RELEASE_TAG#v}"
+          cargo_version="$(sed -n '/^\[workspace.package\]/,/^\[/s/^version = "\([^"]*\)"/\1/p' Cargo.toml)"
+          rpm_version="$(sed -n 's/^Version:[[:space:]]*//p' packaging/rpm/pathpilot.spec)"
+          appstream_version="$(sed -n 's/.*<release version="\([^"]*\)".*/\1/p' data/io.github.RomanRcT.PathPilot.metainfo.xml | head -n 1)"
+          test "$expected" = "$cargo_version"
+          test "$expected" = "$rpm_version"
+          test "$expected" = "$appstream_version"
+
   rpm:
     name: Fedora RPM
+    needs: validate
     runs-on: ubuntu-24.04
     container: fedora:44
     steps:
@@ -62,6 +82,7 @@ jobs:
 
   flatpak:
     name: Flatpak bundle
+    needs: validate
     runs-on: ubuntu-24.04
     steps:
       - name: Install Flatpak tooling

@@ -6,6 +6,32 @@ All notable changes to PathPilot are documented in this file.
 
 No changes yet.
 
+## [0.3.0] - 2026-08-17
+
+### Added
+
+- SFTP and SMB browsing and file operations through GIO/GVfs, including native authentication, bounded directory caching, in-flight request sharing, and directory prefetch.
+- Editable archive sessions for supported local archives, with explicit save or discard handling.
+- Persistent bookmarks with configurable `g` shortcuts and migration from legacy settings.
+- A non-modal operation shelf with aggregate item and byte progress, current filenames, cancellation, and recursive delete progress.
+- Full text preview loading with cancellation and visible loading state.
+- `?` as an alternative to `F1` for toggling the command reference.
+
+### Changed
+
+- Repeated paste reuses the prepared copy manifest instead of rescanning the source tree.
+- Remote parent, current, and directory-preview panes reuse cached listings and active prefetches.
+- Completed remote mutations invalidate the affected current-directory cache automatically.
+- Remote Trash requests now use an explicit permanent-delete confirmation because GVfs remote backends generally do not provide a Trash implementation.
+- Recursive deletion builds its removal plan in one pass before deleting children ahead of their parent.
+
+### Fixed
+
+- Aggregate multi-selection copy progress no longer reaches 100% before every selected tree has completed.
+- Missing optional remote metadata no longer produces repeated GLib critical warnings.
+- Remote navigation reuses an in-flight preview instead of starting the same expensive directory request again.
+- Operation errors remain visible instead of being immediately replaced by the directory loading status.
+
 ## [0.2.0] - 2026-08-06
 
 ### Added
@@ -55,6 +81,7 @@ First preview release.
 - Tabs, filtering, hidden-file controls, richer previews, drag-and-drop, and plugin APIs are not implemented.
 - This is a preview release and configuration formats may evolve before a stable release.
 
+[0.3.0]: https://github.com/RomanRcT/pathpilot/releases/tag/v0.3.0
 [0.2.0]: https://github.com/RomanRcT/pathpilot/releases/tag/v0.2.0
 [0.1.0]: https://github.com/RomanRcT/pathpilot/releases/tag/v0.1.0
-[Unreleased]: https://github.com/RomanRcT/pathpilot/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/RomanRcT/pathpilot/compare/v0.3.0...HEAD

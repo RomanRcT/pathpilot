@@ -1,5 +1,5 @@
 Name:           pathpilot
-Version:        0.2.0
+Version:        0.3.0
 Release:        1%{?dist}
 Summary:        Keyboard-first graphical file manager
 
@@ -50,5 +50,8 @@ appstreamcli validate --no-net %{buildroot}%{_metainfodir}/io.github.RomanRcT.Pa
 %{_metainfodir}/io.github.RomanRcT.PathPilot.metainfo.xml
 
 %changelog
+* Mon Aug 17 2026 RomanRcT <RomanRcT@users.noreply.github.com> - 0.3.0-1
+- Add archive workflows, remote filesystems, bookmarks, and operation progress
+
 * Thu Aug 06 2026 RomanRcT <RomanRcT@users.noreply.github.com> - 0.2.0-1
 - Add independent Space selection, directory monitoring, sorting, and terminal workflow
