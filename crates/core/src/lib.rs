@@ -297,12 +297,13 @@ pub enum OperationState {
     Cancelled,
 }
 
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct OperationProgress {
     pub completed_items: u64,
     pub total_items: Option<u64>,
     pub completed_bytes: u64,
     pub total_bytes: Option<u64>,
+    pub current_item: Option<String>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -1041,7 +1042,7 @@ pub const COMMAND_REFERENCE: &[CommandHint] = &[
         label: "Quit",
     },
     CommandHint {
-        keys: "F1",
+        keys: "F1 / ?",
         label: "Hide hints",
     },
 ];

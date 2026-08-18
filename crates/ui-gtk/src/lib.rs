@@ -19,11 +19,13 @@ use gtk::{gdk, gio, glib};
 use pathpilot_core::{
     AppCommand, AppMode, ClipboardAction, ClipboardItem, CommandPalette, FileEntry, FileKind,
     FilenameFind, InputModeKind, KeyResult, KeySequenceParser, Location, NavigationState,
-    OperationClipboard, OperationId, PaneLayout, SortKey, SortMode, present_location,
+    OperationClipboard, OperationId, OperationProgress, PaneLayout, SortKey, SortMode,
+    present_location,
 };
 use pathpilot_operations::{
-    BatchOperationResult, OperationHandle, OperationResult, TransferSpec, copy_items,
-    create_directory, create_file, delete_items, move_items, rename, trash_items,
+    BatchOperationResult, OperationHandle, OperationResult, PreparedCopyManifest, TransferSpec,
+    copy_items_prepared, create_directory, create_file, delete_items, move_items, rename,
+    trash_items,
 };
 use preview_pane::PreviewPane;
 use tracing::{debug, info, info_span, warn};
@@ -88,7 +90,13 @@ struct Browser {
     input_entry: gtk::Entry,
     input_help: gtk::Label,
     operation_clipboard: RefCell<Option<OperationClipboard>>,
+    prepared_copy: RefCell<Option<PreparedCopyManifest>>,
     active_operation: RefCell<Option<OperationHandle>>,
+    operation_shelf: gtk::Revealer,
+    operation_title: gtk::Label,
+    operation_detail: gtk::Label,
+    operation_progress: gtk::ProgressBar,
+    operation_cancel: gtk::Button,
     git_summary: RefCell<Option<String>>,
     git_probe: Cell<u64>,
     pane_layout: Cell<PaneLayout>,
@@ -205,6 +213,52 @@ impl Browser {
         input_bar.append(&input_title);
         input_bar.append(&input_entry);
         input_bar.append(&input_help);
+        let operation_title = gtk::Label::builder()
+            .label("Copying")
+            .xalign(0.0)
+            .ellipsize(gtk::pango::EllipsizeMode::End)
+            .build();
+        operation_title.add_css_class("heading");
+        let operation_detail = gtk::Label::builder()
+            .label("Preparing…")
+            .xalign(0.0)
+            .max_width_chars(80)
+            .ellipsize(gtk::pango::EllipsizeMode::Middle)
+            .build();
+        operation_detail.add_css_class("dim-label");
+        let operation_progress = gtk::ProgressBar::builder()
+            .hexpand(true)
+            .valign(gtk::Align::Center)
+            .build();
+        let operation_cancel = gtk::Button::builder()
+            .icon_name("process-stop-symbolic")
+            .tooltip_text("Cancel operation")
+            .valign(gtk::Align::Center)
+            .build();
+        operation_cancel.add_css_class("flat");
+        operation_cancel.add_css_class("circular");
+        let operation_header = gtk::Box::new(gtk::Orientation::Horizontal, 12);
+        operation_title.set_hexpand(true);
+        operation_header.append(&operation_title);
+        operation_header.append(&operation_cancel);
+        let operation_content = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .spacing(6)
+            .margin_start(16)
+            .margin_end(12)
+            .margin_top(10)
+            .margin_bottom(10)
+            .build();
+        operation_content.add_css_class("operation-shelf");
+        operation_content.append(&operation_header);
+        operation_content.append(&operation_detail);
+        operation_content.append(&operation_progress);
+        let operation_shelf = gtk::Revealer::builder()
+            .transition_type(gtk::RevealerTransitionType::SlideUp)
+            .transition_duration(180)
+            .reveal_child(false)
+            .child(&operation_content)
+            .build();
         let terminal = vte::Terminal::new();
         terminal.set_hexpand(true);
         terminal.set_vexpand(true);
@@ -259,7 +313,13 @@ impl Browser {
             input_entry,
             input_help,
             operation_clipboard: RefCell::new(None),
+            prepared_copy: RefCell::new(None),
             active_operation: RefCell::new(None),
+            operation_shelf,
+            operation_title,
+            operation_detail,
+            operation_progress,
+            operation_cancel,
             git_summary: RefCell::new(None),
             git_probe: Cell::new(0),
             pane_layout: Cell::new(match ui.pane_layout.as_str() {
@@ -295,6 +355,13 @@ impl Browser {
     }
 
     fn connect(self: &Rc<Self>) {
+        let weak = Rc::downgrade(self);
+        self.operation_cancel.connect_clicked(move |_| {
+            if let Some(browser) = weak.upgrade() {
+                browser.cancel_active_operation();
+            }
+        });
+
         let weak = Rc::downgrade(self);
         self.current
             .selection
@@ -839,6 +906,7 @@ impl Browser {
                 }
             }
         }
+        self.prepared_copy.borrow_mut().take();
         *self.operation_clipboard.borrow_mut() = Some(OperationClipboard {
             action,
             items: clipboard_items,
@@ -959,6 +1027,14 @@ impl Browser {
 
     fn start_paste(self: &Rc<Self>, clipboard: OperationClipboard, transfers: Vec<TransferSpec>) {
         let action = clipboard.action;
+        let item_count = transfers.len();
+        self.show_operation_shelf(
+            match action {
+                ClipboardAction::Copy => "Copying",
+                ClipboardAction::Move => "Moving",
+            },
+            item_count,
+        );
         let weak_finished = Rc::downgrade(self);
         let finished = move |result| {
             if let Some(browser) = weak_finished.upgrade() {
@@ -966,22 +1042,70 @@ impl Browser {
             }
         };
         self.status
-            .set_label(&format!("NORMAL  Pasting {} item(s)…", transfers.len()));
+            .set_label(&format!("NORMAL  Pasting {item_count} item(s)…"));
         let weak_progress = Rc::downgrade(self);
-        let progress = move |progress: pathpilot_core::OperationProgress| {
+        let progress = move |progress: OperationProgress| {
             if let Some(browser) = weak_progress.upgrade() {
-                browser.status.set_label(&format!(
-                    "NORMAL  Processing {} / {} items",
-                    progress.completed_items,
-                    progress.total_items.unwrap_or(0)
-                ));
+                browser.update_operation_shelf(&progress);
             }
         };
         let handle = match action {
-            ClipboardAction::Copy => copy_items(self.operation_id(), transfers, progress, finished),
+            ClipboardAction::Copy => copy_items_prepared(
+                self.operation_id(),
+                transfers,
+                self.prepared_copy.borrow().clone(),
+                progress,
+                finished,
+            ),
             ClipboardAction::Move => move_items(self.operation_id(), transfers, progress, finished),
         };
         *self.active_operation.borrow_mut() = Some(handle);
+    }
+
+    fn show_operation_shelf(&self, action: &str, item_count: usize) {
+        self.operation_title.set_label(&format!(
+            "{action} {item_count} {}",
+            if item_count == 1 { "item" } else { "items" }
+        ));
+        self.operation_detail.set_label("Preparing file list…");
+        self.operation_progress.set_fraction(0.0);
+        self.operation_cancel.set_sensitive(true);
+        self.operation_shelf.set_reveal_child(true);
+    }
+
+    fn update_operation_shelf(&self, progress: &OperationProgress) {
+        let fraction = operation_fraction(progress);
+        self.operation_progress.set_fraction(fraction);
+
+        let item_progress = progress.total_items.map_or_else(
+            || format!("{} items", progress.completed_items),
+            |total| format!("{} / {total} items", progress.completed_items),
+        );
+        let byte_progress = progress.total_bytes.map(|total| {
+            format!(
+                "{} / {}",
+                compact_size(progress.completed_bytes),
+                compact_size(total)
+            )
+        });
+        let percent = format!("{:.0}%", fraction * 100.0);
+        let mut parts = Vec::new();
+        if let Some(name) = progress.current_item.as_deref() {
+            parts.push(name.to_owned());
+        } else {
+            parts.push("Preparing file list…".to_owned());
+        }
+        parts.push(item_progress);
+        if let Some(bytes) = byte_progress {
+            parts.push(bytes);
+        }
+        parts.push(percent);
+        self.operation_detail.set_label(&parts.join("  ·  "));
+    }
+
+    fn hide_operation_shelf(&self) {
+        self.operation_shelf.set_reveal_child(false);
+        self.operation_cancel.set_sensitive(false);
     }
 
     fn cancel_active_operation(&self) -> bool {
@@ -996,6 +1120,8 @@ impl Browser {
             return false;
         };
         handle.cancel();
+        self.operation_cancel.set_sensitive(false);
+        self.operation_detail.set_label("Cancelling…");
         self.status.set_label("NORMAL  Cancelling operation…");
         true
     }
@@ -1421,6 +1547,11 @@ impl Browser {
                 .set_label("NORMAL  Another file operation is already running");
             return;
         }
+        let current = self.navigation.borrow().current().clone();
+        if !trash_is_available(&current) {
+            self.confirm_permanent_delete(window);
+            return;
+        }
         let entries = self.operation_entries();
         if entries.is_empty() {
             return;
@@ -1440,6 +1571,7 @@ impl Browser {
                 && let Some(browser) = weak.upgrade()
             {
                 browser.leave_visual();
+                browser.show_operation_shelf("Moving to Trash", entries.len());
                 let weak_progress = Rc::downgrade(&browser);
                 let callback_browser = Rc::downgrade(&browser);
                 let handle = trash_items(
@@ -1447,11 +1579,7 @@ impl Browser {
                     targets.clone(),
                     move |progress| {
                         if let Some(browser) = weak_progress.upgrade() {
-                            browser.status.set_label(&format!(
-                                "NORMAL  Trashing {} / {} items",
-                                progress.completed_items,
-                                progress.total_items.unwrap_or(0)
-                            ));
+                            browser.update_operation_shelf(&progress);
                         }
                     },
                     move |result| {
@@ -1498,19 +1626,15 @@ impl Browser {
                 && let Some(browser) = weak.upgrade()
             {
                 browser.leave_visual();
+                browser.show_operation_shelf("Deleting permanently", entries.len());
                 let weak_progress = Rc::downgrade(&browser);
                 let weak_finished = Rc::downgrade(&browser);
-                browser.status.set_label("NORMAL  Deleting permanently…");
                 let handle = delete_items(
                     browser.operation_id(),
                     targets.clone(),
                     move |progress| {
                         if let Some(browser) = weak_progress.upgrade() {
-                            browser.status.set_label(&format!(
-                                "NORMAL  Deleting {} / {} items",
-                                progress.completed_items,
-                                progress.total_items.unwrap_or(0)
-                            ));
+                            browser.update_operation_shelf(&progress);
                         }
                     },
                     move |result| {
@@ -1534,16 +1658,18 @@ impl Browser {
             .is_some_and(|handle| handle.id() == result.id);
         if is_active {
             self.active_operation.borrow_mut().take();
+            self.hide_operation_shelf();
         }
-        match result.result {
+        let status = match result.result {
             Ok(()) => {
-                self.status.set_label("NORMAL  Operation completed");
+                let current = self.navigation.borrow().current().clone();
+                self.current.invalidate_cache(&current);
                 self.reload_columns(result.resulting_location, None);
+                "NORMAL  Operation completed".to_owned()
             }
-            Err(error) => self
-                .status
-                .set_label(&format!("NORMAL  Operation failed: {}", error.message)),
-        }
+            Err(error) => format!("NORMAL  Operation failed: {}", error.message),
+        };
+        self.status.set_label(&status);
     }
 
     fn batch_finished(self: &Rc<Self>, result: BatchOperationResult, clear_move_clipboard: bool) {
@@ -1554,24 +1680,31 @@ impl Browser {
             .is_some_and(|handle| handle.id() == result.id);
         if is_active {
             self.active_operation.borrow_mut().take();
+            self.hide_operation_shelf();
         }
         if result.succeeded() && clear_move_clipboard {
             self.operation_clipboard.borrow_mut().take();
         }
+        if let Some(prepared) = result.prepared_copy.clone() {
+            *self.prepared_copy.borrow_mut() = Some(prepared);
+        }
         let preferred = result.resulting_locations.first().cloned();
-        if result.cancelled {
-            self.status.set_label("NORMAL  Batch operation cancelled");
+        let status = if result.cancelled {
+            "NORMAL  Batch operation cancelled".to_owned()
         } else if let Some(failure) = result.failures.first() {
-            self.status.set_label(&format!(
+            format!(
                 "NORMAL  Completed with {} error(s); {}: {}",
                 result.failures.len(),
                 failure.location.uri(),
                 failure.error.message
-            ));
+            )
         } else {
-            self.status.set_label("NORMAL  Batch operation completed");
-        }
+            "NORMAL  Batch operation completed".to_owned()
+        };
+        let current = self.navigation.borrow().current().clone();
+        self.current.invalidate_cache(&current);
         self.reload_columns(preferred, None);
+        self.status.set_label(&status);
     }
 
     fn move_cursor(&self, offset: i32) {
@@ -2249,6 +2382,38 @@ impl Browser {
     }
 }
 
+fn operation_fraction(progress: &OperationProgress) -> f64 {
+    let items = progress
+        .total_items
+        .filter(|total| *total > 0)
+        .map(|total| (progress.completed_items as f64 / total as f64).clamp(0.0, 1.0));
+    let bytes = progress
+        .total_bytes
+        .filter(|total| *total > 0)
+        .map(|total| (progress.completed_bytes as f64 / total as f64).clamp(0.0, 1.0));
+    let fraction = match (bytes, items) {
+        (Some(bytes), Some(items)) => bytes * 0.8 + items * 0.2,
+        (Some(bytes), None) => bytes,
+        (None, Some(items)) => items,
+        (None, None) => 0.0,
+    };
+    let incomplete = progress
+        .total_items
+        .is_some_and(|total| progress.completed_items < total)
+        || progress
+            .total_bytes
+            .is_some_and(|total| progress.completed_bytes < total);
+    if incomplete {
+        fraction.min(0.994)
+    } else {
+        fraction
+    }
+}
+
+fn trash_is_available(location: &Location) -> bool {
+    gio::File::for_uri(location.uri()).is_native()
+}
+
 pub fn build_window(app: &adw::Application) -> adw::ApplicationWindow {
     let startup_span = info_span!("build_window");
     let _guard = startup_span.enter();
@@ -2381,6 +2546,7 @@ pub fn build_window(app: &adw::Application) -> adw::ApplicationWindow {
     interaction_panel.append(&key_hints);
     interaction_panel.append(&browser.input_bar);
     root.append(&interaction_panel);
+    root.append(&browser.operation_shelf);
     root.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
     root.append(&browser.status_bar);
     install_hint_css();
@@ -2552,7 +2718,7 @@ fn install_keyboard_controller(
         ("o t".to_owned(), "Toggle terminal"),
         ("o …".to_owned(), "Open with application"),
         (":".to_owned(), "Command palette"),
-        ("F1".to_owned(), "Hide hints"),
+        ("F1 / ?".to_owned(), "Hide hints"),
     ]);
     reference.extend(places.iter().map(|place| {
         (
@@ -2757,7 +2923,7 @@ fn install_keyboard_controller(
             return glib::Propagation::Proceed;
         }
 
-        if key == gdk::Key::F1 {
+        if key == gdk::Key::F1 || key.to_unicode() == Some('?') {
             parser.borrow_mut().reset();
             let enabled = !hints_enabled.get();
             hints_enabled.set(enabled);
@@ -3283,7 +3449,7 @@ fn format_permissions(mode: u32) -> String {
 fn install_hint_css() {
     let provider = gtk::CssProvider::new();
     provider.load_from_string(
-        ".interaction-panel-content { background-color: @window_bg_color; border-top: 1px solid alpha(@window_fg_color, 0.16); padding: 10px 16px; } .key-hint-key { font-family: monospace; font-weight: bold; color: @accent_color; } .archive-metadata { color: @accent_color; font-weight: bold; } .archive-location { color: @accent_color; font-weight: bold; } .preview-spinner { color: @accent_color; min-width: 64px; min-height: 64px; } .status-line { padding: 7px 10px; font-family: 'Symbols Nerd Font Mono', 'JetBrainsMono Nerd Font', 'Noto Sans Mono', monospace; } .git-status { font-weight: bold; } .status-normal { background: #42566a; color: #f4f7fa; } .status-visual { background: #8a752e; color: #fff8dc; } .status-find { background: #376b5b; color: #f1fff9; } .status-command { background: #604c7a; color: #faf5ff; } .status-input { background: #496278; color: #f4f8ff; } .status-edit { background: #654c3d; color: #fff7ed; }",
+        ".interaction-panel-content { background-color: @window_bg_color; border-top: 1px solid alpha(@window_fg_color, 0.16); padding: 10px 16px; } .operation-shelf { background-color: alpha(@success_color, 0.18); border-top: 1px solid alpha(@success_color, 0.48); } .operation-shelf progressbar trough { min-height: 8px; min-width: 260px; border-radius: 999px; } .operation-shelf progressbar progress { min-height: 8px; border-radius: 999px; background-color: @success_color; } .key-hint-key { font-family: monospace; font-weight: bold; color: @accent_color; } .archive-metadata { color: @accent_color; font-weight: bold; } .archive-location { color: @accent_color; font-weight: bold; } .preview-spinner { color: @accent_color; min-width: 64px; min-height: 64px; } .status-line { padding: 7px 10px; font-family: 'Symbols Nerd Font Mono', 'JetBrainsMono Nerd Font', 'Noto Sans Mono', monospace; } .git-status { font-weight: bold; } .status-normal { background: #42566a; color: #f4f7fa; } .status-visual { background: #8a752e; color: #fff8dc; } .status-find { background: #376b5b; color: #f1fff9; } .status-command { background: #604c7a; color: #faf5ff; } .status-input { background: #496278; color: #f4f8ff; } .status-edit { background: #654c3d; color: #fff7ed; }",
     );
     if let Some(display) = gdk::Display::default() {
         gtk::style_context_add_provider_for_display(
@@ -3331,5 +3497,30 @@ mod tests {
             "sftp://host/home/user"
         );
         assert_eq!(remote_uri("smb", " server/share "), "smb://server/share");
+    }
+
+    #[test]
+    fn remote_locations_do_not_offer_a_trash_operation() {
+        assert!(trash_is_available(&Location::new("file:///tmp")));
+        assert!(!trash_is_available(&Location::new("sftp://host/tmp")));
+        assert!(!trash_is_available(&Location::new("smb://host/share")));
+    }
+
+    #[test]
+    fn transfer_progress_reaches_one_only_when_bytes_and_items_finish() {
+        let bytes_finished = OperationProgress {
+            completed_items: 20,
+            total_items: Some(71),
+            completed_bytes: 1_000,
+            total_bytes: Some(1_000),
+            current_item: None,
+        };
+        assert!(operation_fraction(&bytes_finished) < 1.0);
+
+        let finished = OperationProgress {
+            completed_items: 71,
+            ..bytes_finished
+        };
+        assert_eq!(operation_fraction(&finished), 1.0);
     }
 }

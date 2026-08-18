@@ -47,6 +47,7 @@ PathPilot requires GTK 4.12 or newer, libadwaita 1.5 or newer, and GTK4 VTE.
 - Filename search with `f`, Enter, `n`, and `N`.
 - `g` places for Home, Downloads, root, and configurable bookmarks.
 - Remote SFTP and SMB navigation through GIO/GVfs with native authentication dialogs.
+- Non-modal transfer and delete shelf with aggregate item/byte progress, current filenames, and cancellation.
 - Text clipboard commands for filenames, directory paths, and full paths.
 - MIME-aware Open With history backed by the native GTK/GNOME application chooser.
 - Embedded Neovim editing for local text files through a GTK4 VTE terminal.
