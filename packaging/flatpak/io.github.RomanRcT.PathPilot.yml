@@ -41,6 +41,8 @@ modules:
 
   - name: pathpilot
     buildsystem: simple
+    build-options:
+      prepend-pkg-config-path: /app/lib64/pkgconfig
     build-commands:
       - cargo build --release --locked --offline
       - make install PREFIX=/app
