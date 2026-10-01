@@ -1308,8 +1308,9 @@ impl Browser {
             return;
         }
         let shown = self.current.selection.n_items();
-        self.status
-            .set_label(&format!("NORMAL  Filter \"{query}\" applied · {shown} shown"));
+        self.status.set_label(&format!(
+            "NORMAL  Filter \"{query}\" applied · {shown} shown"
+        ));
     }
 
     fn cancel_filter(&self) {
