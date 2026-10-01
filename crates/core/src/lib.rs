@@ -495,6 +495,7 @@ pub enum AppMode {
     #[default]
     Normal,
     Find,
+    Filter,
     Command,
     TextInput(TextInputMode),
     Visual(VisualSelection),
@@ -506,6 +507,14 @@ impl AppMode {
             return false;
         }
         *self = Self::Find;
+        true
+    }
+
+    pub fn begin_filter(&mut self) -> bool {
+        if *self != Self::Normal {
+            return false;
+        }
+        *self = Self::Filter;
         true
     }
 
@@ -573,6 +582,14 @@ impl AppMode {
 
     pub fn finish_find(&mut self) -> bool {
         if *self != Self::Find {
+            return false;
+        }
+        *self = Self::Normal;
+        true
+    }
+
+    pub fn finish_filter(&mut self) -> bool {
+        if *self != Self::Filter {
             return false;
         }
         *self = Self::Normal;
@@ -1533,6 +1550,20 @@ mod tests {
     }
 
     #[test]
+    fn filter_mode_has_explicit_entry_and_cancel_transitions() {
+        let mut mode = AppMode::default();
+        assert!(mode.begin_filter());
+        assert_eq!(mode, AppMode::Filter);
+        assert!(!mode.begin_find());
+        assert!(!mode.begin_command());
+        assert!(mode.finish_filter());
+        assert_eq!(mode, AppMode::Normal);
+        assert!(mode.begin_filter());
+        assert!(mode.cancel());
+        assert_eq!(mode, AppMode::Normal);
+    }
+
+    #[test]
     fn pane_layout_cycles_through_all_views() {
         let layout = PaneLayout::default();
         assert_eq!(layout.next(), PaneLayout::FocusPreview);
@@ -1544,6 +1575,7 @@ mod tests {
     fn mode_state_machine_allows_only_explicit_transitions() {
         let mut mode = AppMode::default();
         assert!(mode.begin_find());
+        assert!(!mode.begin_filter());
         assert!(!mode.begin_text_input(InputModeKind::CreateFile, ""));
         assert!(mode.finish_find());
         assert!(mode.begin_text_input(InputModeKind::CreateDirectory, ""));

@@ -120,6 +120,7 @@ pub struct UiSettings {
     pub hints_enabled: bool,
     pub confirm_permanent_delete: bool,
     pub preview_delay_ms: u64,
+    pub query_commit_delay_ms: u64,
     pub preview_line_numbers: bool,
     pub color_scheme: String,
     pub sort_key: String,
@@ -142,6 +143,7 @@ impl Default for UiSettings {
             hints_enabled: false,
             confirm_permanent_delete: true,
             preview_delay_ms: 75,
+            query_commit_delay_ms: 800,
             preview_line_numbers: true,
             color_scheme: "system".to_owned(),
             sort_key: "name".to_owned(),
@@ -449,6 +451,17 @@ mod tests {
         let loaded = load_settings(Some(&path)).0;
         assert!(loaded.ui.hints_enabled);
         assert!(loaded.ui.confirm_permanent_delete);
+    }
+
+    #[test]
+    fn query_commit_delay_defaults_and_accepts_disabling() {
+        assert_eq!(UiSettings::default().query_commit_delay_ms, 800);
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        fs::write(&path, "[ui]\nquery_commit_delay_ms = 0\n").unwrap();
+        let loaded = load_settings(Some(&path)).0;
+        assert_eq!(loaded.ui.query_commit_delay_ms, 0);
+        assert_eq!(loaded.ui.preview_delay_ms, 75);
     }
 
     #[test]

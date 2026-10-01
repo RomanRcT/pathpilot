@@ -5,11 +5,12 @@ The first Phase 4 slice replaces implicit GTK keyboard branches with a GTK-indep
 ## Modes
 
 - `Normal` dispatches navigation and operation commands.
-- `Find` owns incremental filename matching until Enter or Escape.
+- `Find` owns incremental filename matching until Enter, Escape, or the idle commit delay.
+- `Filter` owns incremental name filtering until Enter accepts it, Escape clears it, or the idle commit delay applies it.
 - `TextInput` owns text entry for create-file, create-directory, and rename actions.
 - `Visual` owns an anchored, inclusive selection range while keeping one active cursor.
 
-Transitions are explicit and mutually exclusive. A new mode cannot start while another mode is active. Enter completes the current mode only after validation; Escape returns to Normal without performing the pending action. Navigation also resets transient input state.
+Both query modes also commit themselves after `[ui] query_commit_delay_ms` without a keystroke, so focus is back with navigation without any extra key. Transitions are explicit and mutually exclusive. A new mode cannot start while another mode is active. Enter completes the current mode only after validation; Escape returns to Normal without performing the pending action. Navigation also resets transient input state.
 
 Command mode will extend the same enum in a later Phase 4 slice.
 
@@ -30,4 +31,4 @@ Binary confirmations remain modal yes/no dialogs. Trash, permanent deletion, and
 
 ## Verification
 
-Core tests cover mutually exclusive transitions, cancellation, input validation, and replacement of the initial rename value. Workspace formatting, strict Clippy, and tests remain required for every slice.
+Core tests cover mutually exclusive transitions, cancellation, input validation, replacement of the initial rename value, and the explicit Filter mode transitions. Workspace formatting, strict Clippy, and tests remain required for every slice.

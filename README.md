@@ -36,7 +36,7 @@ PathPilot requires GTK 4.12 or newer, libadwaita 1.5 or newer, and GTK4 VTE.
 - Recursive directory copy with progress, cancellation, partial-result cleanup, and no silent overwrites.
 - Explicit “Keep Both” conflict handling with unique destination names.
 - Separately confirmed permanent deletion of files and non-empty directory trees.
-- Explicit Normal, Find, and integrated Text Input modes.
+- Explicit Normal, Find, Filter, and integrated Text Input modes.
 - In-window create and rename editor with cursor movement, selection, clipboard support, and validation.
 - Visual mode with anchored range selection and a separate preview cursor.
 - Visual selections can be copied, moved, trashed, or permanently deleted as one cancellable batch.
@@ -45,6 +45,7 @@ PathPilot requires GTK 4.12 or newer, libadwaita 1.5 or newer, and GTK4 VTE.
 - Persistent window geometry, pane layouts, divider positions, last directory, and hint preference.
 - Browse, focused-preview, and preview-only layouts cycled with `z`.
 - Filename search with `f`, Enter, `n`, and `N`.
+- Live current-directory name filtering with `/`, applied once typing stops (or with Enter) and cleared with Escape.
 - `g` places for Home, Downloads, root, and configurable bookmarks.
 - Remote SFTP and SMB navigation through GIO/GVfs with native authentication dialogs.
 - Non-modal transfer and delete shelf with aggregate item/byte progress, current filenames, and cancellation.
@@ -66,6 +67,7 @@ directory and `h` to return to its parent.
 | `h` / `j` / `k` / `l` | Parent / down / up / open |
 | `gg` / `G` | First / last item |
 | `f`, Enter, `n`, `N` | Find and repeat filename matches |
+| `/` | Filter the current directory by name |
 | `a f` / `a d` / `r` | Create file / create directory / rename |
 | `y y` / `x` / `p` | Copy / cut / paste filesystem items |
 | `y n` / `y d` / `y p` | Copy name / directory path / full path as text |
@@ -89,7 +91,7 @@ directory and `h` to return to its parent.
 ## Current limitations
 
 - Remote image previews, archives, Git integration, terminal, and embedded editing are local-only.
-- No tabs or general-purpose filtering yet.
+- No tabs, and filtering is limited to names in the current directory.
 - No PDF, archive, office document, audio, or video previews.
 - Remote browsing requires the matching GVfs backend to be installed on the host.
 - Embedded editing requires `nvim` and currently accepts local text files only.
@@ -196,6 +198,8 @@ Preview line numbers and the application color scheme can be configured under
 ```toml
 [ui]
 preview_delay_ms = 75    # wait before loading the selected item's preview
+query_commit_delay_ms = 800  # apply a find or filter query once typing stops;
+                             # 0 disables it, so only Enter and Escape apply it
 preview_line_numbers = true
 color_scheme = "system" # system, light, or dark
 sort_key = "name"       # name, extension, size, or modified

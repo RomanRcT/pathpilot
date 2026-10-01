@@ -11,8 +11,12 @@ Filename find provides fast keyboard navigation within the current directory wit
 - `Backspace` edits the query.
 - `n` and `N` repeat the accepted search forward and backward.
 
-The query and no-match feedback appear in the foreground overlay. Navigating to another directory clears the saved query.
+The query and no-match feedback appear in the foreground overlay. Stopping typing
+for `[ui] query_commit_delay_ms` (default 800 ms, `0` to disable) accepts the
+search the same way `Enter` does, so `n` and `N` work straight after it and the
+navigation keys are usable again. Navigating to another directory clears the
+saved query.
 
 ## Deliberate separation from filtering
 
-Find mode keeps every directory entry visible and only moves the selection. The `/` binding is reserved for a future filter mode that will hide entries which do not match its query.
+Find mode keeps every directory entry visible and only moves the selection. The separate `/` binding instead removes non-matching rows from the model; see [filter-mode.md](filter-mode.md).

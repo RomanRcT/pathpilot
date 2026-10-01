@@ -79,6 +79,7 @@ struct Browser {
     sort_status: gtk::Label,
     next_operation_id: Cell<u64>,
     find: RefCell<FilenameFind>,
+    filter_query: RefCell<String>,
     command_palette: RefCell<CommandPalette>,
     mode: RefCell<AppMode>,
     input_source: RefCell<Option<Location>>,
@@ -302,6 +303,7 @@ impl Browser {
             sort_status,
             next_operation_id: Cell::new(1),
             find: RefCell::new(FilenameFind::default()),
+            filter_query: RefCell::new(String::new()),
             command_palette: RefCell::new(CommandPalette::default()),
             mode: RefCell::new(AppMode::default()),
             input_source: RefCell::new(None),
@@ -1135,6 +1137,15 @@ impl Browser {
         self.status.set_label("FIND  Type a filename");
     }
 
+    fn start_filter(&self) {
+        if !self.mode.borrow_mut().begin_filter() {
+            return;
+        }
+        self.filter_query.borrow_mut().clear();
+        self.current.set_filter_query("");
+        self.status.set_label("FILTER  Type to filter");
+    }
+
     fn start_command_palette(&self) {
         if !self.mode.borrow_mut().begin_command() {
             return;
@@ -1220,7 +1231,7 @@ impl Browser {
         let query = find.query().to_owned();
         let matched = position.is_some() || query.is_empty();
         self.status.set_label(if matched {
-            "FIND  Enter accept · Escape cancel"
+            "FIND  Enter or pause accepts · Escape cancels"
         } else {
             "FIND  No matching filename"
         });
@@ -1238,6 +1249,89 @@ impl Browser {
         self.mode.borrow_mut().cancel();
         self.select_position(position);
         self.status.set_label("NORMAL  Find cancelled");
+    }
+
+    fn query_commit_delay_ms(&self) -> u64 {
+        self.settings.borrow().ui.query_commit_delay_ms
+    }
+
+    /// Applies a Find or Filter query that stopped being edited. The user then
+    /// gets the navigation keys back without pressing Enter or Escape.
+    fn commit_idle_query(&self) -> bool {
+        let mode = self.mode.borrow().clone();
+        match mode {
+            AppMode::Find => {
+                let has_query = !self.find.borrow().query().is_empty();
+                if !has_query {
+                    return false;
+                }
+                self.accept_find();
+                true
+            }
+            AppMode::Filter => {
+                if !self.has_filter() {
+                    return false;
+                }
+                self.accept_filter();
+                true
+            }
+            _ => false,
+        }
+    }
+
+    fn update_filter(&self, character: Option<char>) -> String {
+        let query = {
+            let mut query = self.filter_query.borrow_mut();
+            match character {
+                Some(character) => query.push(character),
+                None => {
+                    query.pop();
+                }
+            }
+            query.clone()
+        };
+        let position = self.current.set_filter_query(&query);
+        self.selection_changed(position);
+        self.status.set_label(if query.is_empty() {
+            "FILTER  Type to filter"
+        } else {
+            "FILTER  Enter or pause applies · Escape clears"
+        });
+        query
+    }
+
+    fn accept_filter(&self) {
+        let query = self.filter_query.borrow().clone();
+        self.mode.borrow_mut().finish_filter();
+        if query.is_empty() {
+            self.status.set_label("NORMAL  No filter applied");
+            return;
+        }
+        let shown = self.current.selection.n_items();
+        self.status
+            .set_label(&format!("NORMAL  Filter \"{query}\" applied · {shown} shown"));
+    }
+
+    fn cancel_filter(&self) {
+        self.filter_query.borrow_mut().clear();
+        self.mode.borrow_mut().cancel();
+        let position = self.current.clear_filter();
+        self.selection_changed(position);
+        self.status.set_label("NORMAL  Filter cancelled");
+    }
+
+    fn has_filter(&self) -> bool {
+        !self.filter_query.borrow().is_empty()
+    }
+
+    /// Clears a filter that was already accepted into Normal mode, so a plain
+    /// Escape is enough to get the hidden rows back.
+    fn clear_applied_filter(&self) -> bool {
+        if !self.has_filter() {
+            return false;
+        }
+        self.cancel_filter();
+        true
     }
 
     fn repeat_find(&self, forward: bool) {
@@ -2116,6 +2210,8 @@ impl Browser {
 
     fn navigate_to(self: &Rc<Self>, location: Location, preferred: Option<Location>) {
         self.find.borrow_mut().reset();
+        self.filter_query.borrow_mut().clear();
+        self.current.reset_filter();
         *self.mode.borrow_mut() = AppMode::Normal;
         self.current.end_visual();
         self.input_source.borrow_mut().take();
@@ -2712,6 +2808,7 @@ fn install_keyboard_controller(
         ("Ctrl+R".to_owned(), "Reload current directory"),
         ("e".to_owned(), "Edit in Neovim"),
         ("f".to_owned(), "Find by name"),
+        ("/".to_owned(), "Filter by name"),
         ("Space".to_owned(), "Toggle selection"),
         ("s …".to_owned(), "Change sorting"),
         (".".to_owned(), "Toggle hidden items"),
@@ -2742,6 +2839,41 @@ fn install_keyboard_controller(
         keymap.bindings().to_vec(),
     )));
     let hints_enabled = Rc::new(Cell::new(hints_initially_enabled));
+    let commit_source: Rc<RefCell<Option<glib::SourceId>>> = Rc::default();
+    let arm_query_commit = {
+        let browser = browser.clone();
+        let grid = key_hints.clone();
+        let hints_enabled = hints_enabled.clone();
+        let reference = command_reference.clone();
+        let commit_source = commit_source.clone();
+        move |editing: bool| {
+            cancel_idle_commit(&commit_source);
+            let delay_ms = browser
+                .upgrade()
+                .map_or(0, |browser| browser.query_commit_delay_ms());
+            if !editing || delay_ms == 0 {
+                return;
+            }
+            let browser = browser.clone();
+            let grid = grid.clone();
+            let hints_enabled = hints_enabled.clone();
+            let reference = reference.clone();
+            let fired_source = commit_source.clone();
+            let source = glib::timeout_add_local(Duration::from_millis(delay_ms), move || {
+                // The source is gone once this runs, so forget its id instead of
+                // removing it later.
+                *fired_source.borrow_mut() = None;
+                if let Some(browser) = browser.upgrade()
+                    && browser.commit_idle_query()
+                {
+                    restore_hint_panel(&grid, hints_enabled.get(), &reference);
+                }
+                glib::ControlFlow::Break
+            });
+            *commit_source.borrow_mut() = Some(source);
+        }
+    };
+    let commit_source_for_keys = commit_source.clone();
     let controller = gtk::EventControllerKey::new();
     controller.set_propagation_phase(gtk::PropagationPhase::Capture);
     let weak_window = window.downgrade();
@@ -2803,16 +2935,19 @@ fn install_keyboard_controller(
         {
             match key {
                 gdk::Key::Escape => {
+                    cancel_idle_commit(&commit_source_for_keys);
                     browser.cancel_find();
                     restore_hint_panel(&key_hints, hints_enabled.get(), &command_reference);
                 }
                 gdk::Key::Return | gdk::Key::KP_Enter => {
+                    cancel_idle_commit(&commit_source_for_keys);
                     browser.accept_find();
                     restore_hint_panel(&key_hints, hints_enabled.get(), &command_reference);
                 }
                 gdk::Key::BackSpace => {
                     let (query, matched) = browser.update_find(None);
                     show_find_query(&key_hints, &query, matched);
+                    arm_query_commit(!query.is_empty());
                 }
                 _ if !modifiers.intersects(
                     gdk::ModifierType::CONTROL_MASK
@@ -2825,6 +2960,45 @@ fn install_keyboard_controller(
                     {
                         let (query, matched) = browser.update_find(Some(character));
                         show_find_query(&key_hints, &query, matched);
+                        arm_query_commit(!query.is_empty());
+                    }
+                }
+                _ => return glib::Propagation::Proceed,
+            }
+            return glib::Propagation::Stop;
+        }
+
+        if let Some(browser) = browser.upgrade()
+            && *browser.mode.borrow() == AppMode::Filter
+        {
+            match key {
+                gdk::Key::Escape => {
+                    cancel_idle_commit(&commit_source_for_keys);
+                    browser.cancel_filter();
+                    restore_hint_panel(&key_hints, hints_enabled.get(), &command_reference);
+                }
+                gdk::Key::Return | gdk::Key::KP_Enter => {
+                    cancel_idle_commit(&commit_source_for_keys);
+                    browser.accept_filter();
+                    restore_hint_panel(&key_hints, hints_enabled.get(), &command_reference);
+                }
+                gdk::Key::BackSpace => {
+                    let query = browser.update_filter(None);
+                    show_filter_query(&key_hints, &query);
+                    arm_query_commit(!query.is_empty());
+                }
+                _ if !modifiers.intersects(
+                    gdk::ModifierType::CONTROL_MASK
+                        | gdk::ModifierType::ALT_MASK
+                        | gdk::ModifierType::SUPER_MASK,
+                ) =>
+                {
+                    if let Some(character) = key.to_unicode()
+                        && !character.is_control()
+                    {
+                        let query = browser.update_filter(Some(character));
+                        show_filter_query(&key_hints, &query);
+                        arm_query_commit(!query.is_empty());
                     }
                 }
                 _ => return glib::Propagation::Proceed,
@@ -2840,6 +3014,13 @@ fn install_keyboard_controller(
             if browser
                 .upgrade()
                 .is_some_and(|browser| browser.leave_visual())
+            {
+                restore_hint_panel(&key_hints, hints_enabled.get(), &command_reference);
+                return glib::Propagation::Stop;
+            }
+            if browser
+                .upgrade()
+                .is_some_and(|browser| browser.clear_applied_filter())
             {
                 restore_hint_panel(&key_hints, hints_enabled.get(), &command_reference);
                 return glib::Propagation::Stop;
@@ -3190,9 +3371,8 @@ fn install_keyboard_controller(
                 }
                 '/' => {
                     if let Some(browser) = browser.upgrade() {
-                        browser
-                            .status
-                            .set_label("NORMAL  Filtering with / is reserved for a future release");
+                        browser.start_filter();
+                        show_filter_query(&key_hints, "");
                     }
                     return glib::Propagation::Stop;
                 }
@@ -3267,11 +3447,28 @@ fn show_find_query(grid: &gtk::Grid, query: &str, matched: bool) {
         query
     };
     let state = if matched {
-        "Enter accept · Esc cancel"
+        "Enter or pause accept · Esc cancel"
     } else {
         "No match"
     };
     populate_hint_grid(grid, [("Find".to_owned(), value), (String::new(), state)]);
+    grid.set_visible(true);
+}
+
+fn cancel_idle_commit(source: &Rc<RefCell<Option<glib::SourceId>>>) {
+    if let Some(source) = source.borrow_mut().take() {
+        source.remove();
+    }
+}
+
+fn show_filter_query(grid: &gtk::Grid, query: &str) {
+    let value = if query.is_empty() {
+        "Type to filter…"
+    } else {
+        query
+    };
+    let state = "Enter or pause apply · Esc clear";
+    populate_hint_grid(grid, [("Filter".to_owned(), value), (String::new(), state)]);
     grid.set_visible(true);
 }
 

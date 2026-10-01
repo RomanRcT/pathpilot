@@ -129,6 +129,7 @@ pub struct DirectoryPane {
     show_hidden: Rc<Cell<bool>>,
     visible_rows: Rc<RefCell<Vec<(u32, gtk::Box)>>>,
     independent_selected: Rc<RefCell<HashSet<u32>>>,
+    filter_query: Rc<RefCell<String>>,
 }
 
 impl DirectoryPane {
@@ -281,11 +282,28 @@ impl DirectoryPane {
             show_hidden: Rc::new(Cell::new(false)),
             visible_rows,
             independent_selected,
+            filter_query: Rc::new(RefCell::new(String::new())),
         }
     }
 
     pub fn set_show_hidden(&self, show_hidden: bool) {
         self.show_hidden.set(show_hidden);
+    }
+
+    pub fn set_filter_query(&self, query: &str) -> u32 {
+        *self.filter_query.borrow_mut() = query.to_owned();
+        self.apply_filter()
+    }
+
+    pub fn clear_filter(&self) -> u32 {
+        *self.filter_query.borrow_mut() = String::new();
+        self.apply_filter()
+    }
+
+    /// Drops the filter without touching the model. Used immediately before a
+    /// load, which already rebuilds the rows from scratch.
+    pub fn reset_filter(&self) {
+        *self.filter_query.borrow_mut() = String::new();
     }
 
     pub fn set_sort_mode(&self, mode: SortMode) {
@@ -332,6 +350,7 @@ impl DirectoryPane {
                 entry_count = entries.len(),
                 "remote directory cache hit"
             );
+            *self.load_state.pending_entries.borrow_mut() = entries.clone();
             let objects = self.visible_objects(entries);
             self.store.extend_from_slice(&objects);
             self.status.set_label(&format!(
@@ -394,12 +413,7 @@ impl DirectoryPane {
                         }
                         DirectoryEvent::Finished { .. } => {
                             pane.load_state.cancellable.borrow_mut().take();
-                            let entries = pane
-                                .load_state
-                                .pending_entries
-                                .borrow_mut()
-                                .drain(..)
-                                .collect::<Vec<_>>();
+                            let entries = pane.load_state.pending_entries.borrow().clone();
                             if is_remote {
                                 pane.remote_cache
                                     .borrow_mut()
@@ -459,6 +473,7 @@ impl DirectoryPane {
             .set_label(&format!("{}  {}", self.role, presentation.compact));
         self.title.set_tooltip_text(Some(&presentation.full));
         let entry_count = entries.len();
+        *self.load_state.pending_entries.borrow_mut() = entries.clone();
         let objects = self.visible_objects(entries);
         self.store.extend_from_slice(&objects);
         self.status
@@ -496,6 +511,7 @@ impl DirectoryPane {
             match result {
                 Ok(entries) => {
                     pane.store.remove_all();
+                    *pane.load_state.pending_entries.borrow_mut() = entries.clone();
                     let objects = pane.visible_objects(entries);
                     pane.store.extend_from_slice(&objects);
                     pane.status
@@ -578,6 +594,7 @@ impl DirectoryPane {
     pub fn show_message(&self, title: &str, message: &str) {
         self.cancel();
         self.store.remove_all();
+        self.load_state.pending_entries.borrow_mut().clear();
         self.title.set_label(title);
         self.title.set_tooltip_text(None);
         self.status.set_label(message);
@@ -591,10 +608,62 @@ impl DirectoryPane {
         self.remote_cache.clone()
     }
 
+    /// Reapplies the current name filter to the retained listing so the rows
+    /// change immediately. Returns the position the cursor landed on.
+    pub fn apply_filter(&self) -> u32 {
+        let preferred = self.selected_entry().map(|entry| entry.location);
+        let entries = self.load_state.pending_entries.borrow().clone();
+        let total = entries.len();
+        let objects = self.visible_objects(entries);
+        self.store.remove_all();
+        self.store.extend_from_slice(&objects);
+        let shown = self.selection.n_items();
+        let position = if shown == 0 {
+            self.cursor.set(0);
+            self.refresh_row_states();
+            0
+        } else {
+            let position = preferred
+                .as_ref()
+                .and_then(|location| self.position_of_location(location))
+                .unwrap_or(0)
+                .min(shown - 1);
+            self.select_position(position);
+            let pane = self.clone();
+            glib::idle_add_local_once(move || pane.refresh_row_states());
+            position
+        };
+        if total > 0 {
+            let label = if self.filter_query().is_empty() {
+                format!("{total} entries")
+            } else {
+                format!("{shown} of {total} entries match")
+            };
+            self.status.set_label(&label);
+        }
+        position
+    }
+
+    fn filter_query(&self) -> String {
+        self.filter_query.borrow().clone()
+    }
+
+    fn position_of_location(&self, location: &Location) -> Option<u32> {
+        (0..self.selection.n_items()).find_map(|position| {
+            self.selection
+                .item(position)
+                .and_downcast::<glib::BoxedAnyObject>()
+                .filter(|object| object.borrow::<FileEntry>().location == *location)
+                .map(|_| position)
+        })
+    }
+
     fn visible_objects(&self, entries: Vec<FileEntry>) -> Vec<glib::BoxedAnyObject> {
+        let filter = self.filter_query().to_lowercase();
         entries
             .into_iter()
             .filter(|entry| self.show_hidden.get() || !entry.is_hidden)
+            .filter(|entry| entry_matches_filter(&entry.display_name, &filter))
             .map(glib::BoxedAnyObject::new)
             .collect()
     }
@@ -886,6 +955,12 @@ fn refresh_row_states(
     }
 }
 
+/// The caller lowercases the query once, so each entry only pays for
+/// lowercasing its own name.
+fn entry_matches_filter(display_name: &str, filter_lower: &str) -> bool {
+    filter_lower.is_empty() || display_name.to_lowercase().contains(filter_lower)
+}
+
 fn next_label(widget: &impl IsA<gtk::Widget>) -> gtk::Label {
     widget
         .next_sibling()
@@ -938,6 +1013,15 @@ fn format_modified(modified: Option<SystemTime>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn name_filter_is_case_insensitive_and_substring_based() {
+        assert!(entry_matches_filter("PathPilot.rs", "path"));
+        assert!(entry_matches_filter("readme", "read"));
+        assert!(!entry_matches_filter("Cargo.toml", "yaml"));
+        assert!(entry_matches_filter("Романы", "ром"));
+        assert!(entry_matches_filter("anything", ""));
+    }
 
     #[test]
     fn formats_file_sizes() {

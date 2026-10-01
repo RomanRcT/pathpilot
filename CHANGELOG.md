@@ -4,7 +4,16 @@ All notable changes to PathPilot are documented in this file.
 
 ## [Unreleased]
 
-No changes yet.
+### Added
+
+- Live name filtering of the current directory on `/`, with rows narrowing on every keystroke, `Enter` applying the filter in Normal mode, and `Escape` clearing it.
+- `Filter` as an explicit `AppMode` state with its own entry and cancel transitions.
+- A find or filter query commits itself after `[ui] query_commit_delay_ms` of idle time (default 800 ms, `0` disables it), so navigation with `j`, `k`, `h`, `l`, `g`, and `G` resumes without `Enter` or `Escape`.
+
+### Fixed
+
+- Filename find (`f`, Enter, `n`, `N`) keeps incremental matching after the filter work; previously both modes shared one branch and find stopped matching.
+- Cancelling or navigating away always clears the pane filter, so hidden rows cannot reappear as permanently missing entries.
 
 ## [0.3.0] - 2026-08-17
 
