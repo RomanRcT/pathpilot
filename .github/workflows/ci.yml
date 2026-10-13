@@ -20,7 +20,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Install native and document preview dependencies
-        run: sudo apt-get update && sudo apt-get install --yes libgtk-4-dev libadwaita-1-dev libvte-2.91-gtk4-dev pkg-config poppler-utils libreoffice-writer libreoffice-calc libreoffice-impress
+        run: sudo apt-get update && sudo apt-get install --yes libgtk-4-dev libadwaita-1-dev libvte-2.91-gtk4-dev pkg-config xvfb xauth dbus poppler-utils libreoffice-writer libreoffice-calc libreoffice-impress
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -47,6 +47,11 @@ jobs:
 
       - name: Test PDF and office document previews
         run: cargo test -p pathpilot-preview -- --ignored
+
+      - name: Test tab navigation, clipboard and idle confirmation
+        env:
+          G_DEBUG: fatal-criticals
+        run: dbus-run-session -- xvfb-run -a cargo test -p pathpilot-ui-gtk tabs::tests::workspace_tabs_keep_state_share_clipboard_and_commit_selection -- --ignored --test-threads=1
 
   renovate:
     name: Validate dependency update configuration

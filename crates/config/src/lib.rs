@@ -122,6 +122,7 @@ pub struct UiSettings {
     pub keyboard_confirmations: bool,
     pub preview_delay_ms: u64,
     pub query_commit_delay_ms: u64,
+    pub tab_switch_delay_ms: u64,
     pub preview_line_numbers: bool,
     pub color_scheme: String,
     pub sort_key: String,
@@ -146,6 +147,7 @@ impl Default for UiSettings {
             keyboard_confirmations: true,
             preview_delay_ms: 75,
             query_commit_delay_ms: 800,
+            tab_switch_delay_ms: 500,
             preview_line_numbers: true,
             color_scheme: "system".to_owned(),
             sort_key: "name".to_owned(),
@@ -466,6 +468,18 @@ mod tests {
         let loaded = load_settings(Some(&path)).0;
         assert_eq!(loaded.ui.query_commit_delay_ms, 0);
         assert_eq!(loaded.ui.preview_delay_ms, 75);
+    }
+
+    #[test]
+    fn tab_switch_delay_defaults_and_can_require_enter() {
+        assert_eq!(UiSettings::default().tab_switch_delay_ms, 500);
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        fs::write(&path, "[ui]\ntab_switch_delay_ms = 0\n").unwrap();
+        let settings = load_settings(Some(&path)).0;
+        assert_eq!(settings.ui.tab_switch_delay_ms, 0);
+        save_settings(&path, &settings).unwrap();
+        assert_eq!(load_settings(Some(&path)).0.ui.tab_switch_delay_ms, 0);
     }
 
     #[test]

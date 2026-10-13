@@ -3,6 +3,7 @@
 mod archive;
 mod directory_pane;
 mod preview_pane;
+mod tabs;
 
 use std::{
     cell::{Cell, RefCell},
@@ -28,6 +29,7 @@ use pathpilot_operations::{
     trash_items,
 };
 use preview_pane::PreviewPane;
+use tabs::Workspace;
 use tracing::{debug, info, info_span, warn};
 use vte::prelude::*;
 
@@ -70,6 +72,8 @@ impl ClipboardText {
 type ConfirmationAction = Box<dyn Fn(&Rc<Browser>)>;
 
 struct Browser {
+    workspace: RefCell<Weak<Workspace>>,
+    close_tab_after_archive: Cell<bool>,
     confirmation: RefCell<Option<ConfirmationAction>>,
     navigation: RefCell<NavigationState>,
     parent: DirectoryPane,
@@ -93,8 +97,8 @@ struct Browser {
     input_title: gtk::Label,
     input_entry: gtk::Entry,
     input_help: gtk::Label,
-    operation_clipboard: RefCell<Option<OperationClipboard>>,
-    prepared_copy: RefCell<Option<PreparedCopyManifest>>,
+    operation_clipboard: Rc<RefCell<Option<OperationClipboard>>>,
+    prepared_copy: Rc<RefCell<Option<PreparedCopyManifest>>>,
     active_operation: RefCell<Option<OperationHandle>>,
     operation_shelf: gtk::Revealer,
     operation_title: gtk::Label,
@@ -115,8 +119,6 @@ struct Browser {
     terminal_visible: Cell<bool>,
     terminal_running: Cell<bool>,
     remote_mount: RefCell<Option<gio::Cancellable>>,
-    terminal_button: RefCell<Option<gtk::ToggleButton>>,
-    hidden_button: RefCell<Option<gtk::ToggleButton>>,
     directory_monitors: RefCell<Vec<gio::FileMonitor>>,
     monitor_refresh: RefCell<Option<glib::SourceId>>,
     monitor_generation: Cell<u64>,
@@ -125,7 +127,7 @@ struct Browser {
     settings_path: Option<std::path::PathBuf>,
     archive_sessions: RefCell<Vec<ArchiveSession>>,
     retired_archive_sessions: RefCell<Vec<ArchiveSession>>,
-    archive_clipboard_staging: RefCell<Vec<tempfile::TempDir>>,
+    archive_clipboard_staging: Rc<RefCell<Vec<tempfile::TempDir>>>,
     close_after_archive: Cell<bool>,
     archive_open: RefCell<Option<ArchiveOpenHandle>>,
 }
@@ -288,6 +290,8 @@ impl Browser {
             current.remote_cache(),
         );
         Rc::new(Self {
+            workspace: RefCell::new(Weak::new()),
+            close_tab_after_archive: Cell::new(false),
             confirmation: RefCell::new(None),
             navigation: RefCell::new(NavigationState::new(initial)),
             parent: DirectoryPane::new("Parent"),
@@ -318,8 +322,8 @@ impl Browser {
             input_title,
             input_entry,
             input_help,
-            operation_clipboard: RefCell::new(None),
-            prepared_copy: RefCell::new(None),
+            operation_clipboard: Rc::new(RefCell::new(None)),
+            prepared_copy: Rc::new(RefCell::new(None)),
             active_operation: RefCell::new(None),
             operation_shelf,
             operation_title,
@@ -344,8 +348,6 @@ impl Browser {
             terminal_visible: Cell::new(false),
             terminal_running: Cell::new(false),
             remote_mount: RefCell::new(None),
-            terminal_button: RefCell::new(None),
-            hidden_button: RefCell::new(None),
             directory_monitors: RefCell::new(Vec::new()),
             monitor_refresh: RefCell::new(None),
             monitor_generation: Cell::new(0),
@@ -354,7 +356,7 @@ impl Browser {
             settings_path,
             archive_sessions: RefCell::new(Vec::new()),
             retired_archive_sessions: RefCell::new(Vec::new()),
-            archive_clipboard_staging: RefCell::new(Vec::new()),
+            archive_clipboard_staging: Rc::new(RefCell::new(Vec::new())),
             close_after_archive: Cell::new(false),
             archive_open: RefCell::new(None),
         })
@@ -445,8 +447,8 @@ impl Browser {
         self.current.set_show_hidden(show_hidden);
         self.preview.set_show_hidden(show_hidden);
         self.settings.borrow_mut().ui.show_hidden = show_hidden;
-        if let Some(button) = self.hidden_button.borrow().as_ref() {
-            button.set_active(show_hidden);
+        if let Some(workspace) = self.workspace.borrow().upgrade() {
+            workspace.refresh_header();
         }
         self.reload_columns(None, None);
         self.status.set_label(if show_hidden {
@@ -488,9 +490,6 @@ impl Browser {
         }
         self.terminal_visible.set(true);
         self.terminal_panel.set_visible(true);
-        if let Some(button) = self.terminal_button.borrow().as_ref() {
-            button.set_active(true);
-        }
         if self.terminal_running.get() {
             self.terminal.grab_focus();
             return;
@@ -501,9 +500,6 @@ impl Browser {
     fn hide_terminal(&self) {
         self.terminal_visible.set(false);
         self.terminal_panel.set_visible(false);
-        if let Some(button) = self.terminal_button.borrow().as_ref() {
-            button.set_active(false);
-        }
         self.current.list.grab_focus();
     }
 
@@ -1033,7 +1029,7 @@ impl Browser {
         let weak_finished = Rc::downgrade(self);
         let finished = move |result| {
             if let Some(browser) = weak_finished.upgrade() {
-                browser.batch_finished(result, action == ClipboardAction::Move);
+                browser.batch_finished(result, Some(&clipboard));
             }
         };
         self.status
@@ -1740,7 +1736,7 @@ impl Browser {
                     },
                     move |result| {
                         if let Some(browser) = callback_browser.upgrade() {
-                            browser.batch_finished(result, false);
+                            browser.batch_finished(result, None);
                         }
                     },
                 );
@@ -1785,7 +1781,7 @@ impl Browser {
                     },
                     move |result| {
                         if let Some(browser) = weak_finished.upgrade() {
-                            browser.batch_finished(result, false);
+                            browser.batch_finished(result, None);
                         }
                     },
                 );
@@ -1816,7 +1812,11 @@ impl Browser {
         self.status.set_label(&status);
     }
 
-    fn batch_finished(self: &Rc<Self>, result: BatchOperationResult, clear_move_clipboard: bool) {
+    fn batch_finished(
+        self: &Rc<Self>,
+        result: BatchOperationResult,
+        completed_clipboard: Option<&OperationClipboard>,
+    ) {
         let is_active = self
             .active_operation
             .borrow()
@@ -1826,10 +1826,15 @@ impl Browser {
             self.active_operation.borrow_mut().take();
             self.hide_operation_shelf();
         }
-        if result.succeeded() && clear_move_clipboard {
+        let clipboard_unchanged = completed_clipboard
+            .is_some_and(|clipboard| self.operation_clipboard.borrow().as_ref() == Some(clipboard));
+        if clipboard_unchanged
+            && completed_clipboard
+                .is_some_and(|clipboard| clipboard.should_clear_after_move(result.succeeded()))
+        {
             self.operation_clipboard.borrow_mut().take();
         }
-        if let Some(prepared) = result.prepared_copy.clone() {
+        if clipboard_unchanged && let Some(prepared) = result.prepared_copy.clone() {
             *self.prepared_copy.borrow_mut() = Some(prepared);
         }
         let preferred = result.resulting_locations.first().cloned();
@@ -2189,6 +2194,7 @@ impl Browser {
             self.status
                 .set_label("NORMAL  Wait for the current archive operation to finish");
             self.close_after_archive.set(false);
+            self.close_tab_after_archive.set(false);
             return;
         }
         let changed = self
@@ -2224,7 +2230,10 @@ impl Browser {
                 match response {
                     gtk::ResponseType::Accept => browser.finish_leave_archive(true),
                     gtk::ResponseType::Reject => browser.finish_leave_archive(false),
-                    _ => browser.close_after_archive.set(false),
+                    _ => {
+                        browser.close_after_archive.set(false);
+                        browser.close_tab_after_archive.set(false);
+                    }
                 }
             }
             dialog.close();
@@ -2247,6 +2256,12 @@ impl Browser {
         self.retired_archive_sessions.borrow_mut().push(session);
         if let Some(parent) = parent {
             self.navigate_to(Location::new(parent.uri()), Some(archive));
+        }
+        if self.close_tab_after_archive.replace(false)
+            && let Some(workspace) = self.workspace.borrow().upgrade()
+        {
+            let browser = self.clone();
+            glib::idle_add_local_once(move || workspace.close_browser(&browser));
         }
         if self.close_after_archive.get()
             && let Some(window) = self
@@ -2274,11 +2289,30 @@ impl Browser {
         self.reload_columns(preferred, restored);
     }
 
+    fn focus_current_pane(&self) {
+        self.current.widget.set_focusable(true);
+        self.current.widget.grab_focus();
+    }
+
     fn reload_columns(
         self: &Rc<Self>,
         preferred: Option<Location>,
         restored_position: Option<u32>,
     ) {
+        // Keep focus on a stable container while loading replaces ColumnView rows.
+        // GTK otherwise tries to focus the selectable preview label when the
+        // focused row disappears (including transitions to an empty directory).
+        if self
+            .workspace
+            .borrow()
+            .upgrade()
+            .is_some_and(|workspace| workspace.is_active(self))
+            && !self.editing.get()
+            && !self.terminal.has_focus()
+            && !self.input_bar.is_visible()
+        {
+            self.focus_current_pane();
+        }
         let location = self.navigation.borrow().current().clone();
         self.start_directory_monitors(&location);
         self.start_git_probe(&location);
@@ -2343,6 +2377,9 @@ impl Browser {
                     .select_position(restored_position.unwrap_or(0));
             }
             browser.selection_changed(browser.current.cursor_position());
+            if browser.current.widget.has_focus() && browser.current.selection.n_items() > 0 {
+                browser.current.list.grab_focus();
+            }
         });
         if !used_cache {
             self.preview.show_location_loading(&presentation.compact);
@@ -2356,6 +2393,9 @@ impl Browser {
                 self.current.select_position(restored_position.unwrap_or(0));
             }
             self.selection_changed(self.current.cursor_position());
+            if self.current.widget.has_focus() && self.current.selection.n_items() > 0 {
+                self.current.list.grab_focus();
+            }
         }
     }
 
@@ -2634,17 +2674,6 @@ pub fn build_window(app: &adw::Application) -> adw::ApplicationWindow {
         }
     });
     let settings = Rc::new(RefCell::new(settings));
-    let browser = Browser::new(initial, settings, settings_path);
-    let show_hidden = browser.settings.borrow().ui.show_hidden;
-    browser.parent.set_show_hidden(show_hidden);
-    browser.current.set_show_hidden(show_hidden);
-    browser.preview.set_show_hidden(show_hidden);
-    let sort_mode = browser.sort_mode.get();
-    browser.parent.set_sort_mode(sort_mode);
-    browser.current.set_sort_mode(sort_mode);
-    browser.preview.set_sort_mode(sort_mode);
-    browser.connect_editor_exit();
-
     let window = adw::ApplicationWindow::builder()
         .application(app)
         .title("PathPilot")
@@ -2654,104 +2683,12 @@ pub fn build_window(app: &adw::Application) -> adw::ApplicationWindow {
     if window_maximized {
         window.maximize();
     }
-    let header = adw::HeaderBar::new();
-    let hidden_button = gtk::ToggleButton::builder()
-        .icon_name("view-reveal-symbolic")
-        .tooltip_text("Show hidden items")
-        .active(show_hidden)
-        .build();
-    *browser.hidden_button.borrow_mut() = Some(hidden_button.clone());
-    let terminal_button = gtk::ToggleButton::builder()
-        .icon_name("utilities-terminal-symbolic")
-        .tooltip_text("Show terminal (o t)")
-        .build();
-    *browser.terminal_button.borrow_mut() = Some(terminal_button.clone());
-    let menu = gio::Menu::new();
-    menu.append(Some("About PathPilot"), Some("app.about"));
-    let menu_button = gtk::MenuButton::builder()
-        .icon_name("open-menu-symbolic")
-        .tooltip_text("Main menu")
-        .menu_model(&menu)
-        .build();
-    header.pack_start(&hidden_button);
-    header.pack_start(&terminal_button);
-    header.pack_end(&menu_button);
-    header.set_title_widget(Some(&browser.location_label));
-
     install_about_action(app);
-
-    let columns = three_column_layout(&browser);
-    let content = gtk::Paned::new(gtk::Orientation::Vertical);
-    content.set_start_child(Some(&columns));
-    content.set_end_child(Some(&browser.terminal_panel));
-    content.set_resize_start_child(true);
-    content.set_resize_end_child(true);
-    content.set_shrink_start_child(false);
-    content.set_position((window_height * 2 / 3).max(300));
-    let root = gtk::Box::new(gtk::Orientation::Vertical, 0);
-    root.append(&content);
-    let interaction_panel = gtk::Box::builder()
-        .orientation(gtk::Orientation::Vertical)
-        .visible(true)
-        .build();
-    interaction_panel.add_css_class("interaction-panel");
-    let key_hints = gtk::Grid::builder()
-        .halign(gtk::Align::Center)
-        .column_spacing(12)
-        .row_spacing(6)
-        .visible(false)
-        .build();
-    key_hints.add_css_class("interaction-panel-content");
-    interaction_panel.append(&key_hints);
-    interaction_panel.append(&browser.input_bar);
-    root.append(&interaction_panel);
-    root.append(&browser.operation_shelf);
-    root.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
-    root.append(&browser.status_bar);
     install_hint_css();
-    let toolbar_view = adw::ToolbarView::new();
-    toolbar_view.add_top_bar(&header);
-    toolbar_view.set_content(Some(&root));
-    window.set_content(Some(&toolbar_view));
-
-    let weak = Rc::downgrade(&browser);
-    hidden_button.connect_toggled(move |button| {
-        if let Some(browser) = weak.upgrade() {
-            browser.set_show_hidden(button.is_active());
-        }
-    });
-    let weak = Rc::downgrade(&browser);
-    let terminal_button_for_exit = terminal_button.clone();
-    terminal_button.connect_toggled(move |button| {
-        if let Some(browser) = weak.upgrade()
-            && button.is_active() != browser.terminal_visible.get()
-        {
-            browser.toggle_terminal();
-        }
-    });
-    let weak = Rc::downgrade(&browser);
-    browser.terminal.connect_child_exited(move |_, _| {
-        if weak.upgrade().is_some() {
-            terminal_button_for_exit.set_active(false);
-        }
-    });
-
-    browser.connect();
-    install_keyboard_controller(&window, Rc::downgrade(&browser), &key_hints);
-    let close_browser = browser.clone();
-    let close_window = window.clone();
-    window.connect_close_request(move |_| {
-        if !close_browser.archive_sessions.borrow().is_empty() {
-            close_browser.close_after_archive.set(true);
-            close_browser.leave_archive(&close_window);
-            return glib::Propagation::Stop;
-        }
-        close_browser.persist_window_state(&close_window);
-        close_browser.cancel();
-        glib::Propagation::Proceed
-    });
-    browser.initial_load();
-    browser.restore_pane_layout();
+    let workspace = Workspace::new(&window, settings, settings_path);
+    workspace.add_tab(initial);
+    let close_workspace = workspace.clone();
+    window.connect_close_request(move |_| close_workspace.close_window());
 
     info!("window constructed");
     window
@@ -2868,7 +2805,7 @@ fn install_keyboard_controller(
     window: &adw::ApplicationWindow,
     browser: Weak<Browser>,
     key_hints: &gtk::Grid,
-) {
+) -> gtk::EventControllerKey {
     let path = pathpilot_config::default_path();
     let (keymap, warning) = pathpilot_config::load_or_default(path.as_deref());
     if let Some(error) = warning {
@@ -2895,6 +2832,9 @@ fn install_keyboard_controller(
         ("/".to_owned(), "Filter by name"),
         ("Space".to_owned(), "Toggle selection"),
         ("s …".to_owned(), "Change sorting"),
+        ("t c / t x".to_owned(), "Create / close tab"),
+        ("t 1…9".to_owned(), "Switch tab"),
+        ("t s".to_owned(), "Select tab with j/k"),
         (".".to_owned(), "Toggle hidden items"),
         ("o t".to_owned(), "Toggle terminal"),
         ("o …".to_owned(), "Open with application"),
@@ -2972,11 +2912,22 @@ fn install_keyboard_controller(
     let place_pending_for_keys = place_pending.clone();
     let bookmark_pending = Rc::new(Cell::new(false));
     let bookmark_pending_for_keys = bookmark_pending.clone();
+    let tab_pending = Cell::new(false);
     let sort_pending = Rc::new(Cell::new(false));
     let sort_pending_for_keys = sort_pending.clone();
     let open_with_pending = Rc::new(RefCell::new(None::<(Option<FileEntry>, Vec<gio::AppInfo>)>));
     let open_with_pending_for_keys = open_with_pending.clone();
     controller.connect_key_pressed(move |_, key, _, modifiers| {
+        let workspace = browser.upgrade().and_then(|browser| browser.workspace.borrow().upgrade());
+        if let Some(workspace) = workspace.as_ref() {
+            if !browser.upgrade().is_some_and(|browser| workspace.is_active(&browser)) {
+                return glib::Propagation::Proceed;
+            }
+            if workspace.handle_selection_key(key, modifiers) {
+                return glib::Propagation::Stop;
+            }
+        }
+
         if let Some(browser) = browser.upgrade()
             && browser.confirmation_pending()
         {
@@ -3003,6 +2954,21 @@ fn install_keyboard_controller(
             .is_some_and(|browser| browser.editing.get())
         {
             return glib::Propagation::Proceed;
+        }
+        if tab_pending.replace(false) && key != gdk::Key::Escape {
+            restore_hint_panel(&key_hints, hints_enabled.get(), &command_reference);
+            if !modifiers.intersects(gdk::ModifierType::CONTROL_MASK | gdk::ModifierType::ALT_MASK | gdk::ModifierType::SUPER_MASK)
+                && let Some(workspace) = workspace.as_ref()
+            {
+                match key.to_unicode() {
+                    Some('c') => workspace.create_tab(),
+                    Some('x') => workspace.close_active(),
+                    Some('s') => workspace.begin_selection(),
+                    Some(number @ '1'..='9') => workspace.select_number(number as usize - '1' as usize),
+                    _ => {},
+                }
+            }
+            return glib::Propagation::Stop;
         }
         let document_page_forward = document_page_direction(key, modifiers);
         if let Some(forward) = document_page_forward
@@ -3115,6 +3081,7 @@ fn install_keyboard_controller(
         }
 
         if key == gdk::Key::Escape {
+            tab_pending.set(false);
             place_pending_for_keys.set(false);
             bookmark_pending_for_keys.set(false);
             sort_pending_for_keys.set(false);
@@ -3336,6 +3303,19 @@ fn install_keyboard_controller(
                 }
                 return glib::Propagation::Stop;
             }
+            if character == 't' {
+                parser.borrow_mut().reset();
+                tab_pending.set(true);
+                populate_hint_grid(&key_hints, [
+                    ("c".to_owned(), "Create tab"),
+                    ("x".to_owned(), "Close tab"),
+                    ("1…9".to_owned(), "Switch tab"),
+                    ("s".to_owned(), "Select tab with j/k"),
+                    ("Esc".to_owned(), "Cancel"),
+                ]);
+                key_hints.set_visible(true);
+                return glib::Propagation::Stop;
+            }
             if character == 'g' {
                 parser.borrow_mut().reset();
                 place_pending_for_keys.set(true);
@@ -3457,7 +3437,7 @@ fn install_keyboard_controller(
             if character == '.' {
                 parser.borrow_mut().reset();
                 if let Some(browser) = browser.upgrade() {
-                    let show_hidden = !browser.settings.borrow().ui.show_hidden;
+                    let show_hidden = !browser.current.show_hidden();
                     browser.set_show_hidden(show_hidden);
                 }
                 restore_hint_panel(&key_hints, hints_enabled.get(), &command_reference);
@@ -3537,7 +3517,8 @@ fn install_keyboard_controller(
             KeyResult::Ignored => glib::Propagation::Proceed,
         }
     });
-    window.add_controller(controller);
+    window.add_controller(controller.clone());
+    controller
 }
 
 fn restore_hint_panel(grid: &gtk::Grid, hints_enabled: bool, reference: &[(String, &'static str)]) {
@@ -3754,7 +3735,7 @@ fn format_permissions(mode: u32) -> String {
 fn install_hint_css() {
     let provider = gtk::CssProvider::new();
     provider.load_from_string(
-        ".interaction-panel-content { background-color: @window_bg_color; border-top: 1px solid alpha(@window_fg_color, 0.16); padding: 10px 16px; } .operation-shelf { background-color: alpha(@success_color, 0.18); border-top: 1px solid alpha(@success_color, 0.48); } .operation-shelf progressbar trough { min-height: 8px; min-width: 260px; border-radius: 999px; } .operation-shelf progressbar progress { min-height: 8px; border-radius: 999px; background-color: @success_color; } .key-hint-key { font-family: monospace; font-weight: bold; color: @accent_color; } .archive-metadata { color: @accent_color; font-weight: bold; } .archive-location { color: @accent_color; font-weight: bold; } .preview-spinner { color: @accent_color; min-width: 64px; min-height: 64px; } .status-line { padding: 7px 10px; font-family: 'Symbols Nerd Font Mono', 'JetBrainsMono Nerd Font', 'Noto Sans Mono', monospace; } .git-status { font-weight: bold; } .status-normal { background: #42566a; color: #f4f7fa; } .status-visual { background: #8a752e; color: #fff8dc; } .status-find { background: #376b5b; color: #f1fff9; } .status-command { background: #604c7a; color: #faf5ff; } .status-input { background: #496278; color: #f4f8ff; } .status-edit { background: #654c3d; color: #fff7ed; }",
+        ".pathpilot-tab-active { background: alpha(@accent_bg_color, 0.22); color: @window_fg_color; border-bottom: 2px solid @accent_color; font-weight: bold; } .interaction-panel-content { background-color: @window_bg_color; border-top: 1px solid alpha(@window_fg_color, 0.16); padding: 10px 16px; } .operation-shelf { background-color: alpha(@success_color, 0.18); border-top: 1px solid alpha(@success_color, 0.48); } .operation-shelf progressbar trough { min-height: 8px; min-width: 260px; border-radius: 999px; } .operation-shelf progressbar progress { min-height: 8px; border-radius: 999px; background-color: @success_color; } .key-hint-key { font-family: monospace; font-weight: bold; color: @accent_color; } .archive-metadata { color: @accent_color; font-weight: bold; } .archive-location { color: @accent_color; font-weight: bold; } .preview-spinner { color: @accent_color; min-width: 64px; min-height: 64px; } .status-line { padding: 7px 10px; font-family: 'Symbols Nerd Font Mono', 'JetBrainsMono Nerd Font', 'Noto Sans Mono', monospace; } .git-status { font-weight: bold; } .status-normal { background: #42566a; color: #f4f7fa; } .status-visual { background: #8a752e; color: #fff8dc; } .status-find { background: #376b5b; color: #f1fff9; } .status-command { background: #604c7a; color: #faf5ff; } .status-input { background: #496278; color: #f4f8ff; } .status-edit { background: #654c3d; color: #fff7ed; }",
     );
     if let Some(display) = gdk::Display::default() {
         gtk::style_context_add_provider_for_display(

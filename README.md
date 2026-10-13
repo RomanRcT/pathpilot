@@ -235,6 +235,7 @@ Preview line numbers and the application color scheme can be configured under
 ```toml
 [ui]
 preview_delay_ms = 75    # wait before loading the selected item's preview
+tab_switch_delay_ms = 500 # t s: accept after idle; 0 requires Enter
 query_commit_delay_ms = 800  # apply a find or filter query once typing stops;
                              # 0 disables it, so only Enter and Escape apply it
 keyboard_confirmations = true # y confirms; n or Escape cancels; false restores dialogs
@@ -259,3 +260,24 @@ Their authors are credited in About. Their license notices and bundled font lice
 `data/licenses/`. For offline/Flatpak builds, run
 `python3 tools/vendor-dependencies.py`; it vendors Git dependencies and copies
 WordCraft's compile-time assets as well as registry crates.
+
+## Tabs
+
+`t c` opens a tab at the current directory, `t x` closes the current tab,
+and `t 1` through `t 9` select tabs by number. The last tab stays open.
+Each tab retains its directory, selection, scroll positions and preview; the
+file-operation clipboard is shared between tabs. Tabs are local to the window
+and are not restored on the next launch. The tab strip appears when multiple
+tabs are open and can also be clicked.
+
+`t s` enters tab selection: `j` selects the next tab and `k` the previous one,
+wrapping at either end. Enter accepts immediately; Escape returns to the
+original tab. After a `j`/`k` selection, 500 ms without another navigation key
+accepts automatically and returns focus to the current pane. Set
+`tab_switch_delay_ms = 0` under `[ui]` in `config.toml` to require Enter instead
+(close the application before editing settings). Other file commands are
+blocked while selecting tabs.
+
+A tab with an active file operation cannot be closed until it finishes. Archive
+changes use the existing save/discard confirmation; opening a new tab from an
+archive starts in the directory containing that archive.

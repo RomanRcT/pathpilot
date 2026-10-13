@@ -204,6 +204,10 @@ impl PreviewPane {
         self.directory.set_sort_mode(mode);
     }
 
+    pub fn focus_editor(&self) {
+        self.terminal.grab_focus();
+    }
+
     pub fn show_editor(&self, name: &str) {
         self.cancel();
         self.title.set_label(&format!("Editing — {name}"));

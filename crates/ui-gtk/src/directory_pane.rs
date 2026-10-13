@@ -303,6 +303,10 @@ impl DirectoryPane {
         }
     }
 
+    pub fn show_hidden(&self) -> bool {
+        self.show_hidden.get()
+    }
+
     pub fn set_show_hidden(&self, show_hidden: bool) {
         self.show_hidden.set(show_hidden);
     }

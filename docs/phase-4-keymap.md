@@ -16,3 +16,10 @@ Unknown commands, empty binding arrays, sequences longer than two characters, du
 Supported command names are `navigate_up`, `navigate_down`, `open`, `parent`, `first`, `last`, `quit`, `create_file`, `create_directory`, `rename`, `trash`, `delete_permanently`, `copy`, `cut`, `paste`, `visual`, and `cycle_layout`. F1/`?` help, pending-sequence hints, and command-palette shortcut search use the validated runtime bindings. Conventional GTK shortcuts and modal controls such as `Escape`, `F1`, `?`, Find, and command-palette activation remain fixed.
 
 PathPilot also loads `config.toml` from the same directory. UI defaults are filled for missing fields, malformed settings fall back safely, and the F1/`?` help preference is persisted immediately. Current conventional shortcuts are `Ctrl+C`, `Ctrl+X`, `Ctrl+V`, `Ctrl+N`, `Ctrl+Shift+N`, `Ctrl+Q`, `F2`, `Delete`, and `Shift+Delete`.
+
+Tab controls are fixed modal sequences: `t c` creates a tab, `t x` closes it,
+`t 1`…`t 9` selects by number, and `t s` enters selection with `j`/`k`.
+Enter accepts and Escape restores the original tab. The `[ui]`
+`tab_switch_delay_ms` setting defaults to 500 ms after a selection key;
+0 disables automatic acceptance. The `t` prefix is reserved by the UI, like
+`s` (sorting) and `o` (Open With).
