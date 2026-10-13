@@ -47,6 +47,8 @@ appstreamcli validate --no-net %{buildroot}%{_metainfodir}/io.github.RomanRcT.Pa
 
 %files
 %license LICENSE
+%license %{_datadir}/licenses/pathpilot/wordcraft/
+%license %{_datadir}/licenses/pathpilot/gridcraft/
 %doc README.md CHANGELOG.md
 %{_bindir}/pathpilot
 %{_datadir}/applications/io.github.RomanRcT.PathPilot.desktop

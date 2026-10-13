@@ -14,3 +14,5 @@ install:
 	install -Dm644 data/$(APP_ID).desktop $(DATADIR)/applications/$(APP_ID).desktop
 	install -Dm644 data/$(APP_ID).metainfo.xml $(DATADIR)/metainfo/$(APP_ID).metainfo.xml
 	install -Dm644 data/icons/hicolor/scalable/apps/$(APP_ID).svg $(DATADIR)/icons/hicolor/scalable/apps/$(APP_ID).svg
+	install -d $(DATADIR)/licenses/pathpilot
+	cp -R data/licenses/. $(DATADIR)/licenses/pathpilot/

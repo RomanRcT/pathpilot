@@ -26,8 +26,12 @@ PathPilot requires GTK 4.12 or newer, libadwaita 1.5 or newer, and GTK4 VTE.
 - Preview requests use a configurable 75 ms debounce, are cancelable, and generation-checked.
 - Bounded text previews and asynchronously decoded, viewport-scaled image previews.
 - Empty files have an explicit empty state; unknown MIME types are checked for UTF-8 text without binary control bytes.
-- PDF and office previews preserve page layout, including tables, and load one page at a time.
-  Supported office formats: DOC/DOCX, ODT, RTF, XLS/XLSX, ODS, PPT/PPTX, and ODP.
+- DOCX pages render directly through WordCraft; XLSX sheets are read with GridCraft
+  and drawn as styled cell regions, without starting LibreOffice or creating a PDF.
+  The sheet name and cell range appear next to the page controls.
+- PDF uses Poppler. Other office formats (DOC, ODT, RTF, XLS, ODS, PPT/PPTX, ODP)
+  use LibreOffice conversion; XLSX files with unsupported visual content fall back
+  to this path. Document pages load one at a time.
 - Source previews are syntax-highlighted off the GTK thread with `syntect`.
 - Markdown headings, emphasis, lists, tables, links, and code are rendered without executing HTML or loading remote content.
 - A 24-entry LRU preview cache is invalidated by URI, size, and modification time.
@@ -99,10 +103,14 @@ directory and `h` to return to its parent.
 
 - Remote image previews, archives, Git integration, terminal, and embedded editing are local-only.
 - No tabs, and filtering is limited to names in the current directory.
-- Document previews require Poppler tools; office documents also require LibreOffice.
-  Files are limited to 64 MiB, conversion/rendering has a 60-second timeout per step,
-  and password-protected documents are not supported. Office tables use the document's
-  printable page layout; cells are not editable in preview.
+- Direct DOCX/XLSX previews do not require external office applications. PDF requires
+  Poppler tools; legacy office formats and the compatibility fallback require LibreOffice.
+  Files are limited to 64 MiB, external conversion/rendering has a 60-second timeout per step,
+  and password-protected documents are not supported. Direct spreadsheet previews
+  show visible sheets in cell regions; formulas use their saved results and cells
+  are read-only. Charts, pictures, conditional formatting and rotated spreadsheet
+  text currently use the LibreOffice compatibility fallback. DOCX pagination can
+  differ from Microsoft Word depending on the document and available fonts.
 - No archive, audio, or video previews.
 - Unknown text detection supports UTF-8; other encodings may still be treated as binary.
 - Remote browsing requires the matching GVfs backend to be installed on the host.
@@ -137,14 +145,14 @@ flatpak run io.github.RomanRcT.PathPilot
 
 The Flatpak has host-filesystem access because PathPilot is a file manager. Its
 embedded editor uses `flatpak-spawn --host nvim`, so Neovim and the user's
-normal configuration remain on the host. PDF and office previews also use host
-Poppler/LibreOffice through `flatpak-spawn --host`; temporary copies are kept
+normal configuration remain on the host. Direct DOCX/XLSX previews run inside
+PathPilot; PDF and compatibility previews use host Poppler/LibreOffice through `flatpak-spawn --host`; temporary copies are kept
 in a bounded preview cache and removed when evicted or when PathPilot exits. The manifest therefore also grants
 access to the Flatpak portal service.
 
 ## Fedora development setup
 
-Install the native dependencies:
+Rust 1.90 or newer is required. Install the native dependencies:
 
 ```bash
 sudo dnf install rust cargo rustfmt clippy gtk4-devel libadwaita-devel vte291-gtk4-devel gcc pkgconf-pkg-config neovim 7zip gvfs gvfs-smb
@@ -240,3 +248,9 @@ sort_descending = false
 ## License
 
 PathPilot is free software distributed under the [GNU General Public License v3.0 or later](LICENSE).
+
+Document engines are pinned to specific WordCraft/GridCraft revisions in
+`Cargo.toml`. Their license notices and bundled font licenses are installed from
+`data/licenses/`. For offline/Flatpak builds, run
+`python3 tools/vendor-dependencies.py`; it vendors Git dependencies and copies
+WordCraft's compile-time assets as well as registry crates.

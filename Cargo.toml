@@ -14,7 +14,7 @@ members = [
 version = "0.3.0"
 edition = "2024"
 license = "GPL-3.0-or-later"
-rust-version = "1.85"
+rust-version = "1.90"
 
 [workspace.dependencies]
 adw = { package = "libadwaita", version = "0.8", features = ["v1_5"] }
@@ -37,3 +37,18 @@ serde = { version = "1", features = ["derive"] }
 toml = "0.9"
 syntect = { version = "5.3", default-features = false, features = ["default-fancy"] }
 pulldown-cmark = { version = "0.13.4", default-features = false }
+
+# Pin the document engines to fixed revisions; no editor UI dependencies.
+wordcraft-doc = { git = "https://github.com/storytold/wordcraft", rev = "159b84f54c74e9e82fb3109b758ae7dd6f4e3ab0" }
+wordcraft-docx = { git = "https://github.com/storytold/wordcraft", rev = "159b84f54c74e9e82fb3109b758ae7dd6f4e3ab0" }
+wordcraft-fonts = { git = "https://github.com/storytold/wordcraft", rev = "159b84f54c74e9e82fb3109b758ae7dd6f4e3ab0" }
+wordcraft-layout = { git = "https://github.com/storytold/wordcraft", rev = "159b84f54c74e9e82fb3109b758ae7dd6f4e3ab0" }
+wordcraft-render = { git = "https://github.com/storytold/wordcraft", rev = "159b84f54c74e9e82fb3109b758ae7dd6f4e3ab0" }
+gridcraft-core = { git = "https://github.com/storytold/gridcraft", rev = "84acf6293b1dc1fc09837524e035d674eb4d6741" }
+gridcraft-model = { git = "https://github.com/storytold/gridcraft", rev = "84acf6293b1dc1fc09837524e035d674eb4d6741" }
+gridcraft-xlsx = { git = "https://github.com/storytold/gridcraft", rev = "84acf6293b1dc1fc09837524e035d674eb4d6741" }
+gridcraft-numfmt = { git = "https://github.com/storytold/gridcraft", rev = "84acf6293b1dc1fc09837524e035d674eb4d6741" }
+cairo-rs = { version = "0.21", features = ["png"] }
+pango = "0.21"
+pangocairo = "0.21"
+gridcraft-engine = { git = "https://github.com/storytold/gridcraft", rev = "84acf6293b1dc1fc09837524e035d674eb4d6741" }

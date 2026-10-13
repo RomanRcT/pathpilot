@@ -1,6 +1,7 @@
 //! Bounded, cancelable preview loading without GTK widgets.
 
 pub mod document;
+mod native_document;
 
 use std::{
     collections::VecDeque,

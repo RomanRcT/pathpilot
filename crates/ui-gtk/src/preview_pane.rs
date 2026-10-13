@@ -166,6 +166,7 @@ impl PreviewPane {
         widget.append(&stack);
         let document_navigation = gtk::Label::builder()
             .wrap(true)
+            .wrap_mode(gtk::pango::WrapMode::WordChar)
             .margin_top(6)
             .margin_bottom(6)
             .visible(false)
@@ -473,8 +474,12 @@ impl PreviewPane {
     fn render_document(&self, preview: DocumentPreview) {
         self.picture
             .set_paintable(Some(&gdk::Texture::for_pixbuf(&preview.pixbuf)));
+        let location = preview
+            .session
+            .page_label(preview.page_number)
+            .map_or_else(String::new, |label| format!("{label} · "));
         self.document_navigation.set_label(&format!(
-            "Page {} / {} · n next · N previous",
+            "{location}Page {} / {} · n next · N previous",
             preview.page_number, preview.session.page_count,
         ));
         self.document_navigation.set_visible(true);

@@ -99,10 +99,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Vendor Rust dependencies
-        run: |
-          cargo vendor vendor
-          mkdir -p .cargo
-          cp packaging/flatpak/cargo-config.toml .cargo/config.toml
+        run: python3 tools/vendor-dependencies.py
 
       - name: Build Flatpak bundle
         shell: bash

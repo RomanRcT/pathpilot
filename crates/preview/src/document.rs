@@ -14,7 +14,10 @@ use std::{
 
 use gio::prelude::*;
 
-use crate::{FileEntry, Generation, PreviewContent, PreviewLimits, PreviewResult};
+use crate::{
+    FileEntry, Generation, PreviewContent, PreviewLimits, PreviewResult,
+    native_document::NativeDocument,
+};
 
 const MAX_DOCUMENT_BYTES: u64 = 64 * 1024 * 1024;
 
@@ -22,6 +25,7 @@ const MAX_DOCUMENT_BYTES: u64 = 64 * 1024 * 1024;
 pub struct DocumentSession {
     temporary: tempfile::TempDir,
     pdf: PathBuf,
+    native: Option<NativeDocument>,
     pub page_count: u32,
     limits: PreviewLimits,
     // Keep the initialized profile alive for subsequent document conversions.
@@ -48,12 +52,26 @@ impl DocumentSession {
         Ok(Self {
             temporary,
             pdf,
+            native: None,
             page_count,
             limits,
             _office_profile: office_profile,
             pages: Mutex::new(VecDeque::new()),
             retained_bytes,
         })
+    }
+    pub fn page_label(&self, number: u32) -> Option<String> {
+        self.native
+            .as_ref()
+            .and_then(|document| document.page_label(number))
+    }
+
+    pub fn renderer_name(&self) -> &'static str {
+        match &self.native {
+            Some(NativeDocument::Word { .. }) => "WordCraft",
+            Some(NativeDocument::Sheets { .. }) => "GridCraft",
+            None => "Poppler",
+        }
     }
 }
 
@@ -126,6 +144,7 @@ pub(crate) fn load_document(
     let destination = gio::File::for_path(&input);
     let source = gio::File::for_uri(entry.location.uri());
     let is_pdf = extension == "pdf";
+    let direct_extension = extension.to_owned();
     let worker_cancellable = cancellable.clone();
     let copy_cancellable = cancellable.clone();
     let size_exceeded = Rc::new(Cell::new(false));
@@ -169,20 +188,37 @@ pub(crate) fn load_document(
                     {
                         return Err("Document preview is limited to 64 MiB".to_owned());
                     }
-                    let (pdf, office_profile) =
-                        prepare_pdf(&temporary, &input, is_pdf, &cancellable)?;
-                    if !is_pdf {
-                        fs::remove_file(&input).map_err(|error| error.to_string())?;
-                    }
-                    let page_count = pdf_page_count(&temporary, &pdf, &cancellable)?;
-                    let session = Arc::new(DocumentSession::new(
-                        temporary,
-                        pdf,
-                        page_count,
-                        limits,
-                        office_profile,
-                    )?);
-                    let bytes = render_page(&session, 1, &cancellable)?;
+                    let native = if matches!(direct_extension.as_str(), "docx" | "xlsx") {
+                        let source = fs::read(&input).map_err(|error| error.to_string())?;
+                        let direct = NativeDocument::read(&source, &direct_extension, &cancellable).and_then(|document| {
+                            let bytes = document.render(1, limits, &cancellable)?;
+                            Ok((document, bytes))
+                        });
+                        match direct {
+                            Ok(document) => Some(document),
+                            Err(error) if cancellable.is_cancelled() => return Err(error),
+                            Err(error) => {
+                                tracing::debug!(%error, format = direct_extension, "using office conversion fallback");
+                                None
+                            }
+                        }
+                    } else { None };
+                    let (session, bytes) = if let Some((native, bytes)) = native {
+                        let page_count = native.page_count();
+                        let mut session = DocumentSession::new(temporary, input, page_count, limits, None)?;
+                        // Account conservatively for decompressed models and layout in the LRU budget.
+                        session.retained_bytes = session.retained_bytes.saturating_mul(16);
+                        session.native = Some(native);
+                        session.pages.lock().map_err(|error| error.to_string())?.push_back((1, bytes.clone()));
+                        (Arc::new(session), bytes)
+                    } else {
+                        let (pdf, office_profile) = prepare_pdf(&temporary, &input, is_pdf, &cancellable)?;
+                        if !is_pdf { fs::remove_file(&input).map_err(|error| error.to_string())?; }
+                        let page_count = pdf_page_count(&temporary, &pdf, &cancellable)?;
+                        let session = Arc::new(DocumentSession::new(temporary, pdf, page_count, limits, office_profile)?);
+                        let bytes = render_page(&session, 1, &cancellable)?;
+                        (session, bytes)
+                    };
                     Ok((session, 1, bytes))
                 }
             });
@@ -385,36 +421,40 @@ fn render_page(
             return Ok(bytes);
         }
     }
-    // Each request owns its output directory, including when a cancelled render is still exiting.
-    let output = tempfile::Builder::new()
-        .prefix("page-")
-        .tempdir_in(session.temporary.path())
-        .map_err(|error| error.to_string())?;
-    let prefix = output.path().join("page");
-    run_tool(
-        "pdftoppm",
-        &[
-            "-f".into(),
-            page.to_string().into(),
-            "-l".into(),
-            page.to_string().into(),
-            "-singlefile".into(),
-            "-scale-to".into(),
-            session
-                .limits
-                .image_width
-                .max(session.limits.image_height)
-                .clamp(1, 2400)
-                .to_string()
-                .into(),
-            "-png".into(),
-            session.pdf.as_os_str().into(),
-            prefix.into_os_string(),
-        ],
-        output.path(),
-        cancellable,
-    )?;
-    let bytes = fs::read(output.path().join("page.png")).map_err(|error| error.to_string())?;
+    let bytes = if let Some(native) = &session.native {
+        native.render(page, session.limits, cancellable)?
+    } else {
+        // Each request owns its output directory, including when a cancelled render is still exiting.
+        let output = tempfile::Builder::new()
+            .prefix("page-")
+            .tempdir_in(session.temporary.path())
+            .map_err(|error| error.to_string())?;
+        let prefix = output.path().join("page");
+        run_tool(
+            "pdftoppm",
+            &[
+                "-f".into(),
+                page.to_string().into(),
+                "-l".into(),
+                page.to_string().into(),
+                "-singlefile".into(),
+                "-scale-to".into(),
+                session
+                    .limits
+                    .image_width
+                    .max(session.limits.image_height)
+                    .clamp(1, 2400)
+                    .to_string()
+                    .into(),
+                "-png".into(),
+                session.pdf.as_os_str().into(),
+                prefix.into_os_string(),
+            ],
+            output.path(),
+            cancellable,
+        )?;
+        fs::read(output.path().join("page.png")).map_err(|error| error.to_string())?
+    };
     let mut pages = session.pages.lock().map_err(|error| error.to_string())?;
     pages.push_back((page, bytes.clone()));
     while pages.len() > 4
@@ -620,6 +660,77 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "requires a working image decoder; run with --ignored"]
+    fn direct_docx_and_xlsx_pipeline_never_creates_a_pdf() {
+        use std::cell::RefCell;
+        let _guard = crate::tests::async_test_guard();
+        for (extension, bytes, renderer) in [
+            (
+                "docx",
+                crate::native_document::tests::docx_fixture(),
+                "WordCraft",
+            ),
+            (
+                "xlsx",
+                crate::native_document::tests::xlsx_fixture(),
+                "GridCraft",
+            ),
+        ] {
+            let temporary = tempfile::tempdir().unwrap();
+            let input = temporary.path().join(format!("native.{extension}"));
+            fs::write(&input, bytes).unwrap();
+            let entry = FileEntry {
+                location: crate::Location::new(gio::File::for_path(&input).uri()),
+                display_name: format!("native.{extension}"),
+                kind: pathpilot_core::FileKind::Regular,
+                size: Some(fs::metadata(&input).unwrap().len()),
+                modified: Some(fs::metadata(&input).unwrap().modified().unwrap()),
+                unix_mode: None,
+                content_type: None,
+                is_hidden: false,
+                is_symlink: false,
+                archive_format: None,
+            };
+            let result = Rc::new(RefCell::new(None));
+            let main_loop = glib::MainLoop::new(None, false);
+            let generation = crate::GenerationTracker::default().advance();
+            let started = Instant::now();
+            let _cancellable = crate::load_preview(
+                &entry,
+                generation,
+                PreviewLimits::default(),
+                false,
+                crate::PreviewMode::Automatic,
+                {
+                    let result = result.clone();
+                    let main_loop = main_loop.clone();
+                    move |preview| {
+                        *result.borrow_mut() = Some(preview.content);
+                        main_loop.quit();
+                    }
+                },
+            );
+            main_loop.run();
+            let content = result.borrow_mut().take().unwrap().unwrap();
+            let PreviewContent::Document(preview) = &content else {
+                panic!("expected document");
+            };
+            assert_eq!(preview.session.renderer_name(), renderer);
+            assert!(preview.session._office_profile.is_none());
+            assert!(!preview.session.temporary.path().join("input.pdf").exists());
+            assert_eq!(preview.session.pdf.extension().unwrap(), extension);
+            assert!(preview.pixbuf.width() > 0 && preview.pixbuf.height() > 0);
+            eprintln!(
+                "{renderer} complete preview pipeline: {:?}",
+                started.elapsed()
+            );
+            let mut cache = crate::PreviewCache::new(24);
+            cache.insert(&entry, content);
+            assert!(cache.get(&entry).is_some());
+        }
+    }
+
+    #[test]
     #[ignore = "requires Poppler tools and an image decoder; run with --ignored"]
     fn document_pipeline_stages_and_navigates_pages() {
         use std::cell::RefCell;
@@ -758,6 +869,20 @@ mod tests {
             .unwrap();
             let input = temporary.path().join(format!("input.{output_extension}"));
             assert!(input.is_file());
+            let direct_started = Instant::now();
+            let native =
+                NativeDocument::read(&fs::read(&input).unwrap(), output_extension, &cancellable)
+                    .unwrap();
+            assert!(
+                native
+                    .render(1, PreviewLimits::default(), &cancellable)
+                    .unwrap()
+                    .starts_with(b"\x89PNG")
+            );
+            eprintln!(
+                "LibreOffice-produced {output_extension}, direct first page: {:?}",
+                direct_started.elapsed()
+            );
             let started = Instant::now();
             let (pdf, profile) = prepare_pdf(&temporary, &input, false, &cancellable).unwrap();
             let conversion_time = started.elapsed();
