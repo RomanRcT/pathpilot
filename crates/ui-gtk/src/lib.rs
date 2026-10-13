@@ -1524,13 +1524,17 @@ impl Browser {
             self.input_title.set_label(&question);
             self.input_title.set_wrap(true);
             self.input_title.set_width_chars(32);
-            self.input_help.set_label(&format!("{detail}\ny yes · n / Esc cancel"));
+            self.input_help
+                .set_label(&format!("{detail}\ny yes · n / Esc cancel"));
             self.input_help.set_wrap(true);
             self.input_help.set_max_width_chars(60);
             self.input_bar.set_tooltip_text(Some(&detail));
             self.input_bar.set_visible(true);
             self.input_entry.grab_focus();
-            self.status.set_label(&format!("INPUT  {question} {} · y / n", detail.replace('\n', " ")));
+            self.status.set_label(&format!(
+                "INPUT  {question} {} · y / n",
+                detail.replace('\n', " ")
+            ));
             return;
         }
         let dialog = gtk::MessageDialog::builder()
@@ -1724,8 +1728,8 @@ impl Browser {
             move |browser| {
                 browser.leave_visual();
                 browser.show_operation_shelf("Moving to Trash", entries.len());
-                let weak_progress = Rc::downgrade(&browser);
-                let callback_browser = Rc::downgrade(&browser);
+                let weak_progress = Rc::downgrade(browser);
+                let callback_browser = Rc::downgrade(browser);
                 let handle = trash_items(
                     browser.operation_id(),
                     targets.clone(),
@@ -1760,14 +1764,17 @@ impl Browser {
         self.ask_confirmation(
             window,
             format!("Delete {} item(s) permanently?", entries.len()),
-            format!("{}\n\nThis cannot be undone. Directories and all their contents will be removed.", selection_summary(&entries)),
+            format!(
+                "{}\n\nThis cannot be undone. Directories and all their contents will be removed.",
+                selection_summary(&entries)
+            ),
             "Delete Permanently",
             gtk::MessageType::Error,
             move |browser| {
                 browser.leave_visual();
                 browser.show_operation_shelf("Deleting permanently", entries.len());
-                let weak_progress = Rc::downgrade(&browser);
-                let weak_finished = Rc::downgrade(&browser);
+                let weak_progress = Rc::downgrade(browser);
+                let weak_finished = Rc::downgrade(browser);
                 let handle = delete_items(
                     browser.operation_id(),
                     targets.clone(),

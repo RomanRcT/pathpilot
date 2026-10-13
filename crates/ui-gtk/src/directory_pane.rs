@@ -187,6 +187,8 @@ impl DirectoryPane {
             }
         });
 
+        let names_only = role == "Parent";
+        let pane_width = Rc::new(Cell::new(0));
         let factory = gtk::SignalListItemFactory::new();
         factory.connect_setup(|_, item| {
             item.downcast_ref::<gtk::ListItem>()
@@ -195,7 +197,10 @@ impl DirectoryPane {
         });
         {
             let visible_rows = visible_rows.clone();
-            factory.connect_bind(move |_, item| bind_row(item, &visible_rows));
+            let pane_width = pane_width.clone();
+            factory.connect_bind(move |_, item| {
+                bind_row(item, &visible_rows, names_only, pane_width.get());
+            });
         }
         {
             let visible_rows = visible_rows.clone();
@@ -213,6 +218,18 @@ impl DirectoryPane {
         }
 
         let list = gtk::ListView::new(Some(selection.clone()), Some(factory));
+        {
+            let visible_rows = visible_rows.clone();
+            list.add_tick_callback(move |list, _| {
+                let width = list.width();
+                if pane_width.replace(width) != width {
+                    for (_, row) in visible_rows.borrow().iter() {
+                        update_metadata_visibility(row, names_only, width);
+                    }
+                }
+                glib::ControlFlow::Continue
+            });
+        }
         {
             let visible_rows = visible_rows.clone();
             let selection = selection.clone();
@@ -831,14 +848,13 @@ fn create_row() -> gtk::Box {
     let name = gtk::Label::builder()
         .xalign(0.0)
         .hexpand(true)
+        .width_chars(1)
         .ellipsize(gtk::pango::EllipsizeMode::End)
         .build();
-    let kind = metadata_label(65);
     let size = metadata_label(75);
     let modified = metadata_label(125);
     row.append(&icon);
     row.append(&name);
-    row.append(&kind);
     row.append(&size);
     row.append(&modified);
     row
@@ -853,7 +869,12 @@ fn metadata_label(width: i32) -> gtk::Label {
     label
 }
 
-fn bind_row(item: &glib::Object, visible_rows: &Rc<RefCell<Vec<(u32, gtk::Box)>>>) {
+fn bind_row(
+    item: &glib::Object,
+    visible_rows: &Rc<RefCell<Vec<(u32, gtk::Box)>>>,
+    names_only: bool,
+    pane_width: i32,
+) {
     let item = item
         .downcast_ref::<gtk::ListItem>()
         .expect("factory bind receives ListItem");
@@ -886,8 +907,7 @@ fn bind_row(item: &glib::Object, visible_rows: &Rc<RefCell<Vec<(u32, gtk::Box)>>
         .and_downcast::<gtk::Image>()
         .expect("first row child is an Image");
     let name = next_label(&icon);
-    let kind = next_label(&name);
-    let size = next_label(&kind);
+    let size = next_label(&name);
     let modified = next_label(&size);
 
     let content_type = entry.content_type.as_deref().unwrap_or_else(|| {
@@ -899,9 +919,9 @@ fn bind_row(item: &glib::Object, visible_rows: &Rc<RefCell<Vec<(u32, gtk::Box)>>
     });
     icon.set_from_gicon(&gio::content_type_get_icon(content_type));
     name.set_label(&entry.display_name);
-    kind.set_label(file_kind_label(entry.kind));
     size.set_label(&format_size(entry.size));
     modified.set_label(&format_modified(entry.modified));
+    update_metadata_visibility(&row, names_only, pane_width);
     row.set_tooltip_text(Some(&format!(
         "{}\nModified: {}",
         entry.location.uri(),
@@ -968,14 +988,19 @@ fn next_label(widget: &impl IsA<gtk::Widget>) -> gtk::Label {
         .expect("row metadata child is a Label")
 }
 
-fn file_kind_label(kind: FileKind) -> &'static str {
-    match kind {
-        FileKind::Directory => "Folder",
-        FileKind::Regular => "File",
-        FileKind::Symlink => "Link",
-        FileKind::Special => "Special",
-        FileKind::Unknown => "Unknown",
-    }
+// Reserve roughly 240 px for the icon and filename before showing metadata.
+fn metadata_visibility(names_only: bool, width: i32) -> (bool, bool) {
+    (!names_only && width >= 360, !names_only && width >= 520)
+}
+
+fn update_metadata_visibility(row: &gtk::Box, names_only: bool, width: i32) {
+    let icon = row.first_child().expect("row contains an icon");
+    let name = next_label(&icon);
+    let size = next_label(&name);
+    let modified = next_label(&size);
+    let (show_size, show_modified) = metadata_visibility(names_only, width);
+    size.set_visible(show_size);
+    modified.set_visible(show_modified);
 }
 
 fn format_size(size: Option<u64>) -> String {
@@ -1012,6 +1037,15 @@ fn format_modified(modified: Option<SystemTime>) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn metadata_yields_space_to_names_in_narrow_panes() {
+        assert_eq!(super::metadata_visibility(true, 1000), (false, false));
+        assert_eq!(super::metadata_visibility(false, 359), (false, false));
+        assert_eq!(super::metadata_visibility(false, 360), (true, false));
+        assert_eq!(super::metadata_visibility(false, 519), (true, false));
+        assert_eq!(super::metadata_visibility(false, 520), (true, true));
+    }
+
     use super::*;
 
     #[test]
