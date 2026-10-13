@@ -9,13 +9,14 @@ use gtk::{gdk, gio, glib, prelude::*};
 use pathpilot_core::{FileEntry, FileKind, Generation, SortMode};
 use pathpilot_preview::document::{DocumentPreview, load_document_page};
 use pathpilot_preview::{
-    MarkdownPreview, MarkdownStyle, PreviewCache, PreviewContent, PreviewGate, PreviewLimits,
-    PreviewMode, PreviewResult, StyledTextPreview, load_preview,
+    PreviewCache, PreviewContent, PreviewGate, PreviewLimits, PreviewMode, PreviewResult,
+    StyledTextPreview, load_preview,
 };
 use tracing::{debug, info};
 use vte::prelude::*;
 
 use crate::directory_pane::{DirectoryPane, SharedDirectoryCache};
+use crate::markdown_view::MarkdownView;
 
 const MAX_GTK_STYLE_SPANS: usize = 8_000;
 const MAX_GTK_LINE_NUMBER_TAGS: usize = 2_000;
@@ -29,6 +30,7 @@ struct PreviewState {
     has_rendered_content: Cell<bool>,
     loading: Cell<bool>,
     document: RefCell<Option<DocumentPreview>>,
+    rendered_entry: RefCell<Option<FileEntry>>,
 }
 
 impl Default for PreviewState {
@@ -41,6 +43,7 @@ impl Default for PreviewState {
             has_rendered_content: Cell::new(false),
             loading: Cell::new(false),
             document: RefCell::new(None),
+            rendered_entry: RefCell::new(None),
         }
     }
 }
@@ -55,6 +58,8 @@ pub struct PreviewPane {
     metadata: gtk::Label,
     text: gtk::TextView,
     picture: gtk::Picture,
+    markdown: MarkdownView,
+    preview_only: Rc<Cell<bool>>,
     document_navigation: gtk::Label,
     spinner: gtk::Spinner,
     loading_label: gtk::Label,
@@ -67,6 +72,7 @@ impl PreviewPane {
     pub fn new(
         show_line_numbers: bool,
         preview_delay_ms: u64,
+        markdown_theme: &str,
         remote_cache: SharedDirectoryCache,
     ) -> Self {
         let directory = DirectoryPane::with_remote_cache("Directory preview", remote_cache);
@@ -150,6 +156,8 @@ impl PreviewPane {
         stack.add_named(&directory.widget, Some("directory"));
         stack.add_named(&terminal, Some("editor"));
         stack.add_named(&loading_page, Some("loading"));
+        let markdown = MarkdownView::new(markdown_theme);
+        stack.add_named(markdown.widget(), Some("markdown"));
 
         let title = gtk::Label::builder()
             .label("Preview")
@@ -183,6 +191,8 @@ impl PreviewPane {
             metadata,
             text,
             picture,
+            markdown,
+            preview_only: Rc::new(Cell::new(false)),
             document_navigation,
             spinner,
             loading_label,
@@ -223,6 +233,29 @@ impl PreviewPane {
     pub fn invalidate(&self, entry: &FileEntry) {
         self.state.cache.borrow_mut().invalidate(&entry.location);
         self.state.has_rendered_content.set(false);
+    }
+
+    pub fn snapshot(&self, entry: &FileEntry) -> Option<PreviewContent> {
+        if self.state.rendered_entry.borrow().as_ref() == Some(entry)
+            && let Some(document) = self.state.document.borrow().clone()
+        {
+            return Some(PreviewContent::Document(document));
+        }
+        self.state.cache.borrow_mut().get(entry)
+    }
+
+    pub fn restore_content(&self, entry: &FileEntry, content: PreviewContent) {
+        self.cancel();
+        let generation = self.state.gate.borrow_mut().begin();
+        self.state.cache.borrow_mut().insert(entry, content.clone());
+        self.render(
+            entry,
+            PreviewResult {
+                generation,
+                content: Ok(content),
+            },
+        );
+        self.title.set_label("Preview");
     }
 
     pub fn schedule(&self, entry: FileEntry) {
@@ -314,6 +347,7 @@ impl PreviewPane {
     }
 
     pub fn cancel(&self) {
+        self.markdown.stop_loading();
         self.state.document.borrow_mut().take();
         self.document_navigation.set_visible(false);
         self.state.gate.borrow_mut().begin();
@@ -420,6 +454,7 @@ impl PreviewPane {
 
     fn render(&self, entry: &FileEntry, result: PreviewResult) {
         self.state.has_rendered_content.set(true);
+        *self.state.rendered_entry.borrow_mut() = Some(entry.clone());
         match result.content {
             Ok(PreviewContent::Text(preview)) => {
                 if preview.text.is_empty() {
@@ -451,8 +486,8 @@ impl PreviewPane {
                 self.stack.set_visible_child_name("text");
             }
             Ok(PreviewContent::Markdown(preview)) => {
-                self.render_markdown(preview);
-                self.stack.set_visible_child_name("text");
+                self.markdown.render(preview, &entry.location);
+                self.stack.set_visible_child_name("markdown");
             }
             Ok(PreviewContent::Image(preview)) => {
                 let texture = gdk::Texture::for_pixbuf(&preview.pixbuf);
@@ -472,6 +507,9 @@ impl PreviewPane {
                     .set_label(&basic_metadata(entry, &format!("Preview error: {message}")));
                 self.stack.set_visible_child_name("metadata");
             }
+        }
+        if self.preview_only.get() && self.widget.is_mapped() {
+            self.focus_content();
         }
     }
 
@@ -610,65 +648,24 @@ impl PreviewPane {
         );
     }
 
-    fn render_markdown(&self, preview: MarkdownPreview) {
-        let dark = adw::StyleManager::default().is_dark();
-        let buffer = gtk::TextBuffer::new(None);
-        let suffix = if preview.truncated {
-            "\n[Preview truncated]"
-        } else {
-            ""
-        };
-        let source = format!("{}{suffix}", preview.text);
-        buffer.set_text(&self.display_text(&source));
-
-        for span in preview.spans {
-            let builder = gtk::TextTag::builder();
-            let tag = match span.style {
-                MarkdownStyle::Heading(level) => builder
-                    .weight(700)
-                    .scale(match level {
-                        1 => 1.8,
-                        2 => 1.5,
-                        3 => 1.3,
-                        _ => 1.1,
-                    })
-                    .build(),
-                MarkdownStyle::Strong => builder.weight(700).build(),
-                MarkdownStyle::Emphasis | MarkdownStyle::Quote => {
-                    builder.style(gtk::pango::Style::Italic).build()
-                }
-                MarkdownStyle::Code => builder
-                    .family("monospace")
-                    .background_rgba(&if dark {
-                        gdk::RGBA::new(0.20, 0.22, 0.26, 1.0)
-                    } else {
-                        gdk::RGBA::new(0.92, 0.93, 0.94, 1.0)
-                    })
-                    .foreground_rgba(&if dark {
-                        gdk::RGBA::new(0.90, 0.90, 0.90, 1.0)
-                    } else {
-                        gdk::RGBA::new(0.16, 0.17, 0.19, 1.0)
-                    })
-                    .build(),
-                MarkdownStyle::Link => builder
-                    .foreground_rgba(&if dark {
-                        gdk::RGBA::new(0.35, 0.65, 1.0, 1.0)
-                    } else {
-                        gdk::RGBA::new(0.12, 0.38, 0.78, 1.0)
-                    })
-                    .underline(gtk::pango::Underline::Single)
-                    .build(),
-            };
-            buffer.tag_table().add(&tag);
-            self.apply_tag_safely(
-                &buffer,
-                &tag,
-                self.preview_offset(&source, span.start, false),
-                self.preview_offset(&source, span.end, true),
-            );
+    pub fn set_preview_only(&self, enabled: bool) {
+        self.preview_only.set(enabled);
+        if enabled {
+            self.focus_content();
         }
-        self.apply_line_number_style(&buffer, &source);
-        self.text.set_buffer(Some(&buffer));
+    }
+
+    pub fn focus_content(&self) {
+        match self.stack.visible_child_name().as_deref() {
+            Some("markdown") => self.markdown.focus(),
+            Some("text") => {
+                self.text.grab_focus();
+            }
+            _ => {
+                self.widget.set_focusable(true);
+                self.widget.grab_focus();
+            }
+        }
     }
 
     fn display_text(&self, text: &str) -> String {
@@ -779,6 +776,28 @@ fn basic_metadata(entry: &FileEntry, status: &str) -> String {
     )
 }
 
+/// Shared document paging keys for the browser and independent viewer windows.
+pub(super) fn document_page_direction(key: gdk::Key, modifiers: gdk::ModifierType) -> Option<bool> {
+    let modifiers = modifiers
+        & (gdk::ModifierType::SHIFT_MASK
+            | gdk::ModifierType::CONTROL_MASK
+            | gdk::ModifierType::ALT_MASK
+            | gdk::ModifierType::SUPER_MASK
+            | gdk::ModifierType::META_MASK);
+    match (key, modifiers) {
+        (gdk::Key::Page_Up, gdk::ModifierType::CONTROL_MASK) => Some(false),
+        (gdk::Key::Page_Down, gdk::ModifierType::CONTROL_MASK) => Some(true),
+        (gdk::Key::n | gdk::Key::bracketright, modifiers) if modifiers.is_empty() => Some(true),
+        (gdk::Key::N, modifiers)
+            if modifiers.is_empty() || modifiers == gdk::ModifierType::SHIFT_MASK =>
+        {
+            Some(false)
+        }
+        (gdk::Key::bracketleft, modifiers) if modifiers.is_empty() => Some(false),
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -787,7 +806,12 @@ mod tests {
     #[ignore = "requires a graphical session; run this test with --ignored --test-threads=1"]
     fn document_viewport_ignores_hidden_content_and_fits_resized_panes() {
         adw::init().unwrap();
-        let pane = PreviewPane::new(false, 0, Rc::new(RefCell::new(Default::default())));
+        let pane = PreviewPane::new(
+            false,
+            0,
+            "compact",
+            Rc::new(RefCell::new(Default::default())),
+        );
         pane.metadata
             .set_text(&"very-long-unbroken-path".repeat(100));
         pane.text.buffer().set_text(&"long source line".repeat(500));

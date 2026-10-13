@@ -70,26 +70,8 @@ pub struct StyledTextPreview {
 }
 
 #[derive(Clone, Debug)]
-pub enum MarkdownStyle {
-    Heading(u8),
-    Strong,
-    Emphasis,
-    Code,
-    Link,
-    Quote,
-}
-
-#[derive(Clone, Debug)]
-pub struct MarkdownSpan {
-    pub start: i32,
-    pub end: i32,
-    pub style: MarkdownStyle,
-}
-
-#[derive(Clone, Debug)]
 pub struct MarkdownPreview {
-    pub text: String,
-    pub spans: Vec<MarkdownSpan>,
+    pub html: String,
     pub truncated: bool,
 }
 
@@ -361,7 +343,11 @@ fn load_text(
                                 }
                                 _ => visible,
                             };
-                            let rich = visible.len() <= limits.max_rich_text_bytes;
+                            // The syntax-highlighting budget must not turn Markdown
+                            // into plain text. Its automatic HTML preview remains
+                            // bounded by the general text read limit instead.
+                            let rich = is_markdown_name(&display_name)
+                                || visible.len() <= limits.max_rich_text_bytes;
                             if !rich {
                                 on_result(PreviewResult {
                                     generation,
@@ -633,101 +619,130 @@ fn render_markdown(
     truncated: bool,
     cancellable: &gio::Cancellable,
 ) -> Result<MarkdownPreview, String> {
-    use pulldown_cmark::{Event, HeadingLevel, Options, Parser, Tag, TagEnd};
+    use pulldown_cmark::{Event, Options, Parser, Tag};
 
     let options = Options::ENABLE_TABLES
         | Options::ENABLE_STRIKETHROUGH
         | Options::ENABLE_TASKLISTS
-        | Options::ENABLE_GFM;
-    let parser = Parser::new_ext(&source, options);
-    let mut text = String::new();
-    let mut spans = Vec::new();
-    let mut open: Vec<(TagEnd, i32, MarkdownStyle)> = Vec::new();
-
-    for event in parser {
-        if cancellable.is_cancelled() {
-            return Err("Preview cancelled".to_owned());
-        }
-        match event {
-            Event::Start(tag) => match tag {
-                Tag::Heading { level, .. } => open.push((
-                    TagEnd::Heading(level),
-                    char_len(&text),
-                    MarkdownStyle::Heading(match level {
-                        HeadingLevel::H1 => 1,
-                        HeadingLevel::H2 => 2,
-                        HeadingLevel::H3 => 3,
-                        HeadingLevel::H4 => 4,
-                        HeadingLevel::H5 => 5,
-                        HeadingLevel::H6 => 6,
-                    }),
-                )),
-                Tag::Strong => open.push((TagEnd::Strong, char_len(&text), MarkdownStyle::Strong)),
-                Tag::Emphasis => {
-                    open.push((TagEnd::Emphasis, char_len(&text), MarkdownStyle::Emphasis));
-                }
-                Tag::CodeBlock(_) => {
-                    open.push((TagEnd::CodeBlock, char_len(&text), MarkdownStyle::Code));
-                }
-                Tag::Link { .. } => open.push((TagEnd::Link, char_len(&text), MarkdownStyle::Link)),
-                Tag::BlockQuote(kind) => {
-                    text.push_str("│ ");
-                    open.push((
-                        TagEnd::BlockQuote(kind),
-                        char_len(&text),
-                        MarkdownStyle::Quote,
-                    ));
-                }
-                Tag::Item => text.push_str("• "),
-                _ => {}
-            },
-            Event::End(end) => {
-                if let Some(index) = open.iter().rposition(|(tag, _, _)| *tag == end) {
-                    let (_, start, style) = open.remove(index);
-                    spans.push(MarkdownSpan {
-                        start,
-                        end: char_len(&text),
-                        style,
-                    });
-                }
-                match end {
-                    TagEnd::Paragraph | TagEnd::Heading(_) | TagEnd::Item => text.push('\n'),
-                    TagEnd::TableCell => text.push_str(" │ "),
-                    TagEnd::TableRow => text.push('\n'),
-                    TagEnd::CodeBlock => text.push('\n'),
-                    _ => {}
-                }
-            }
-            Event::Text(value) => text.push_str(&value),
-            Event::Code(value) => {
-                let start = char_len(&text);
-                text.push_str(&value);
-                spans.push(MarkdownSpan {
-                    start,
-                    end: char_len(&text),
-                    style: MarkdownStyle::Code,
-                });
-            }
-            Event::SoftBreak | Event::HardBreak => text.push('\n'),
-            Event::Rule => text.push_str("────────\n"),
-            Event::TaskListMarker(checked) => {
-                text.push_str(if checked { "☑ " } else { "☐ " });
-            }
-            Event::Html(_) | Event::InlineHtml(_) => {}
-            Event::FootnoteReference(value) => text.push_str(&format!("[{value}]")),
-            Event::InlineMath(value) | Event::DisplayMath(value) => text.push_str(&value),
-        }
+        | Options::ENABLE_GFM
+        | Options::ENABLE_FOOTNOTES
+        | Options::ENABLE_HEADING_ATTRIBUTES;
+    let mut events: Vec<_> = Parser::new_ext(&source, options)
+        .take_while(|_| !cancellable.is_cancelled())
+        .filter_map(|event| match event {
+            Event::Html(_) | Event::InlineHtml(_) => None,
+            Event::Start(Tag::Link {
+                link_type,
+                dest_url,
+                title,
+                id,
+            }) => Some(Event::Start(Tag::Link {
+                link_type,
+                dest_url: if safe_markdown_url(&dest_url, false) {
+                    dest_url
+                } else {
+                    "".into()
+                },
+                title,
+                id,
+            })),
+            Event::Start(Tag::Image {
+                link_type,
+                dest_url,
+                title,
+                id,
+            }) => Some(Event::Start(Tag::Image {
+                link_type,
+                dest_url: if safe_markdown_url(&dest_url, true) {
+                    dest_url
+                } else {
+                    "".into()
+                },
+                title,
+                id,
+            })),
+            event => Some(event),
+        })
+        .collect();
+    if cancellable.is_cancelled() {
+        return Err("Preview cancelled".to_owned());
     }
-
-    Ok(MarkdownPreview {
-        text,
-        spans,
-        truncated,
-    })
+    add_markdown_heading_ids(&mut events);
+    let mut html = String::new();
+    pulldown_cmark::html::push_html(&mut html, events.into_iter());
+    Ok(MarkdownPreview { html, truncated })
 }
 
-fn char_len(value: &str) -> i32 {
-    i32::try_from(value.chars().count()).unwrap_or(i32::MAX)
+fn add_markdown_heading_ids(events: &mut [pulldown_cmark::Event<'_>]) {
+    use pulldown_cmark::{Event, Tag, TagEnd};
+    let mut used = std::collections::HashSet::new();
+    // Explicit ids take precedence even when they occur later in the document.
+    for event in events.iter() {
+        if let Event::Start(Tag::Heading { id: Some(id), .. }) = event {
+            used.insert(id.to_string());
+        }
+    }
+    for index in 0..events.len() {
+        if !matches!(events[index], Event::Start(Tag::Heading { id: None, .. })) {
+            continue;
+        }
+        let text = events[index + 1..]
+            .iter()
+            .take_while(|event| !matches!(event, Event::End(TagEnd::Heading(_))))
+            .filter_map(|event| match event {
+                Event::Text(value) | Event::Code(value) => Some(value.as_ref()),
+                _ => None,
+            })
+            .collect::<String>();
+        let slug: String = text
+            .trim()
+            .to_lowercase()
+            .chars()
+            .filter_map(|character| {
+                if character.is_whitespace() {
+                    Some('-')
+                } else if character.is_alphanumeric() || matches!(character, '-' | '_') {
+                    Some(character)
+                } else {
+                    None
+                }
+            })
+            .collect();
+        let slug = if slug.is_empty() {
+            "section".to_owned()
+        } else {
+            slug
+        };
+        let mut id = slug.clone();
+        let mut suffix = 1;
+        while !used.insert(id.clone()) {
+            id = format!("{slug}-{suffix}");
+            suffix += 1;
+        }
+        if let Event::Start(Tag::Heading { id: heading_id, .. }) = &mut events[index] {
+            *heading_id = Some(id.into());
+        }
+    }
+}
+
+fn safe_markdown_url(url: &str, image: bool) -> bool {
+    if url.chars().any(char::is_control) {
+        return false;
+    }
+    let url = url.trim();
+    let Some((scheme, _)) = url.split_once(':') else {
+        return true;
+    };
+    // A colon after a slash belongs to a relative path, not a URI scheme.
+    if scheme.contains(['/', '?', '#']) {
+        return true;
+    }
+    match scheme.to_ascii_lowercase().as_str() {
+        "http" | "https" | "file" => true,
+        "mailto" => !image,
+        "data" => image && url.to_ascii_lowercase().starts_with("data:image/"),
+        _ => false,
+    }
 }
 
 // Unknown MIME types must be valid UTF-8 without binary control bytes.
@@ -1011,6 +1026,68 @@ mod tests {
     }
 
     #[test]
+    fn large_markdown_keeps_html_in_automatic_and_full_modes() {
+        let _guard = async_test_guard();
+        let temporary = tempfile::tempdir().unwrap();
+        let limits = PreviewLimits::default();
+        for repeats in [1_500, 12_000] {
+            let source = format!(
+                "# Large Markdown\n\n{}END-MARKER",
+                "A paragraph with **bold** text.\n\n".repeat(repeats)
+            );
+            assert!(source.len() > limits.max_rich_text_bytes);
+            let path = temporary.path().join("large.md");
+            fs::write(&path, &source).unwrap();
+            // GIO can report text/plain for Markdown, as it does for the reported file.
+            let entry = FileEntry {
+                location: Location::new(gio::File::for_path(path).uri()),
+                display_name: "large.md".to_owned(),
+                kind: FileKind::Regular,
+                size: Some(source.len() as u64),
+                modified: None,
+                unix_mode: None,
+                content_type: Some("text/plain".to_owned()),
+                is_hidden: false,
+                is_symlink: false,
+                archive_format: None,
+            };
+            for mode in [PreviewMode::Automatic, PreviewMode::Full] {
+                let result = Rc::new(RefCell::new(None));
+                let main_loop = glib::MainLoop::new(None, false);
+                let received = result.clone();
+                let finished = main_loop.clone();
+                let _cancellable = load_preview(
+                    &entry,
+                    GenerationTracker::default().advance(),
+                    limits,
+                    false,
+                    mode,
+                    move |preview| {
+                        *received.borrow_mut() = Some(preview);
+                        finished.quit();
+                    },
+                );
+                main_loop.run();
+                let PreviewContent::Markdown(preview) =
+                    result.borrow_mut().take().unwrap().content.unwrap()
+                else {
+                    panic!("large Markdown must use HTML, not plain text")
+                };
+                assert!(
+                    preview
+                        .html
+                        .contains("<h1 id=\"large-markdown\">Large Markdown</h1>")
+                );
+                assert!(preview.html.contains("<strong>bold</strong>"));
+                let truncated =
+                    mode == PreviewMode::Automatic && source.len() > limits.max_text_bytes;
+                assert_eq!(preview.truncated, truncated);
+                assert_eq!(preview.html.contains("END-MARKER"), !truncated);
+            }
+        }
+    }
+
+    #[test]
     fn full_preview_reads_through_end_of_large_file() {
         let _guard = async_test_guard();
         let temporary = tempfile::tempdir().expect("create temporary directory");
@@ -1122,21 +1199,59 @@ mod tests {
         )
         .expect("markdown render succeeds");
 
-        assert!(preview.text.contains("Title"));
-        assert!(preview.text.contains("bold and code"));
-        assert!(!preview.text.contains("script"));
+        assert!(preview.html.contains("<h1 id=\"title\">Title</h1>"));
+        assert!(preview.html.contains("<strong>bold</strong>"));
+        assert!(preview.html.contains("<code>code</code>"));
+        assert!(!preview.html.contains("script"));
+    }
+
+    #[test]
+    fn markdown_keeps_tables_images_tasks_and_escapes_code() {
+        let preview = render_markdown(
+            "| Name | Value |\n| --- | --- |\n| A | B |\n\n![Photo](images/local.png)\n\n- [x] Done\n\n~~old~~\n\n```html\n<script>example</script>\n```".to_owned(),
+            false, &gio::Cancellable::new(),
+        ).unwrap();
+        assert!(preview.html.contains("<table>"));
+        assert!(preview.html.contains("<td>A</td>"));
+        assert!(preview.html.contains("src=\"images/local.png\""));
+        assert!(preview.html.contains("type=\"checkbox\""));
+        assert!(preview.html.contains("<del>old</del>"));
         assert!(
             preview
-                .spans
-                .iter()
-                .any(|span| matches!(span.style, MarkdownStyle::Heading(1)))
+                .html
+                .contains("&lt;script&gt;example&lt;/script&gt;")
         );
-        assert!(
-            preview
-                .spans
-                .iter()
-                .any(|span| matches!(span.style, MarkdownStyle::Code))
-        );
+    }
+
+    #[test]
+    fn markdown_rejects_script_links_and_active_raw_html() {
+        let preview = render_markdown(
+            "[bad](javascript:alert%281%29) [also bad](vbscript:bad) ![bad](data:text/html,evil) <img src=x onerror=alert(1)>".to_owned(),
+            false, &gio::Cancellable::new(),
+        ).unwrap();
+        assert!(!preview.html.contains("javascript:"));
+        assert!(!preview.html.contains("vbscript:"));
+        assert!(!preview.html.contains("data:text/html"));
+        assert!(!preview.html.contains("onerror"));
+        assert!(safe_markdown_url("../images/a.png", true));
+        assert!(!safe_markdown_url("java\nscript:bad", false));
+    }
+
+    #[test]
+    fn markdown_heading_anchors_are_stable_and_unique() {
+        let preview = render_markdown(
+            "# Начало работы\n\n# Начало работы\n\n# Explicit {#custom}\n\n# Custom".to_owned(),
+            false,
+            &gio::Cancellable::new(),
+        )
+        .unwrap();
+        for id in ["начало-работы", "начало-работы-1", "custom", "custom-1"]
+        {
+            assert!(preview.html.contains(&format!("id=\"{id}\"")));
+        }
+        let cancelled = gio::Cancellable::new();
+        cancelled.cancel();
+        assert!(render_markdown("# Heading".to_owned(), false, &cancelled).is_err());
     }
 
     #[test]

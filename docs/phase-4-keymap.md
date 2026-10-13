@@ -23,3 +23,9 @@ Enter accepts and Escape restores the original tab. The `[ui]`
 `tab_switch_delay_ms` setting defaults to 500 ms after a selection key;
 0 disables automatic acceptance. The `t` prefix is reserved by the UI, like
 `s` (sorting) and `o` (Open With).
+
+`o v` opens an independent read-only viewer for the selected file. In that
+window, `j`/`k` navigates sibling files, `n`/`N` changes document pages, `u` loads
+a full preview, Ctrl+R refreshes, and `q` closes only the viewer.
+
+The `?` / `F1` hint panel groups commands by navigation, file operations, preview, tabs, places, and interface controls. The main menu’s **Keyboard Shortcuts** opens the same grouped reference in a scrollable dialog. The `g` and `b` panels separate local navigation, network connections, and user bookmarks; `b` also explains how to choose an unused bookmark key.

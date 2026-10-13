@@ -17,8 +17,9 @@ def main():
             path = directory / name
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_bytes(data)
+        roots = {name.split("/", 1)[0] for name in expected}
         for path in directory.rglob("*"):
-            if path.is_file() and str(path.relative_to(directory)) not in expected:
+            if path.is_file() and path.relative_to(directory).parts[0] in roots and str(path.relative_to(directory)) not in expected:
                 path.unlink()
     check_notices(ROOT, expected)
     print("Craft engine pins, Cargo.lock and redistribution notices match.")

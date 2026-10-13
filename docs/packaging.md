@@ -10,14 +10,16 @@ The Fedora spec is `packaging/rpm/pathpilot.spec`. A release source archive must
 be named `pathpilot-<version>.tar.gz` and contain a matching top-level directory.
 The package builds with Cargo, installs under `/usr`, validates desktop metadata,
 and lets RPM discover linked-library dependencies. Neovim is a recommendation
-because only embedded editing requires it.
+because only embedded editing requires it. WebKitGTK 6.0 is a build and runtime
+dependency for Markdown HTML preview.
 
 ## Flatpak
 
 The manifest is
 `packaging/flatpak/io.github.RomanRcT.PathPilot.yml` and targets GNOME 50. Cargo
 dependencies are vendored before `flatpak-builder` runs; the generated vendor
-directory and `.cargo/config.toml` are intentionally not committed.
+directory and `.cargo/config.toml` are intentionally not committed. WebKitGTK
+6.0 is supplied by the GNOME 50 SDK/runtime.
 
 The application receives host-filesystem access for file management. Embedded
 editing delegates to host Neovim through `flatpak-spawn --host`, preserving the

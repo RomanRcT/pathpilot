@@ -2,8 +2,10 @@
 
 mod archive;
 mod directory_pane;
+mod markdown_view;
 mod preview_pane;
 mod tabs;
+mod viewer;
 
 use std::{
     cell::{Cell, RefCell},
@@ -28,7 +30,7 @@ use pathpilot_operations::{
     copy_items_prepared, create_directory, create_file, delete_items, move_items, rename,
     trash_items,
 };
-use preview_pane::PreviewPane;
+use preview_pane::{PreviewPane, document_page_direction};
 use tabs::Workspace;
 use tracing::{debug, info, info_span, warn};
 use vte::prelude::*;
@@ -125,8 +127,8 @@ struct Browser {
     sort_mode: Cell<SortMode>,
     settings: Rc<RefCell<pathpilot_config::Settings>>,
     settings_path: Option<std::path::PathBuf>,
-    archive_sessions: RefCell<Vec<ArchiveSession>>,
-    retired_archive_sessions: RefCell<Vec<ArchiveSession>>,
+    archive_sessions: RefCell<Vec<Rc<ArchiveSession>>>,
+    retired_archive_sessions: RefCell<Vec<Rc<ArchiveSession>>>,
     archive_clipboard_staging: Rc<RefCell<Vec<tempfile::TempDir>>>,
     close_after_archive: Cell<bool>,
     archive_open: RefCell<Option<ArchiveOpenHandle>>,
@@ -287,6 +289,7 @@ impl Browser {
         let preview = PreviewPane::new(
             ui.preview_line_numbers,
             ui.preview_delay_ms,
+            &ui.markdown_theme,
             current.remote_cache(),
         );
         Rc::new(Self {
@@ -721,6 +724,11 @@ impl Browser {
                 self.current.widget.set_visible(false);
             }
         }
+        self.preview
+            .set_preview_only(layout == PaneLayout::PreviewOnly);
+        if layout != PaneLayout::PreviewOnly {
+            self.focus_current_pane();
+        }
         self.status
             .set_label(&format!("NORMAL  Layout: {}", layout.label()));
     }
@@ -771,6 +779,8 @@ impl Browser {
                 self.current.widget.set_visible(false);
             }
         }
+        self.preview
+            .set_preview_only(layout == PaneLayout::PreviewOnly);
     }
 
     fn persist_window_state(&self, window: &adw::ApplicationWindow) {
@@ -1875,6 +1885,36 @@ impl Browser {
         self.selection_changed(self.current.cursor_position());
     }
 
+    fn open_viewer(&self, window: &adw::ApplicationWindow) {
+        let Some(entry) = self.current.selected_entry().filter(viewer::can_view) else {
+            return;
+        };
+        let Some(application) = window.application() else {
+            return;
+        };
+        let mut ui = self.settings.borrow().ui.clone();
+        ui.show_hidden = self.current.show_hidden();
+        let resources = self
+            .archive_sessions
+            .borrow()
+            .iter()
+            .cloned()
+            .map(|session| session as Rc<dyn std::any::Any>)
+            .collect();
+        viewer::open(
+            &application,
+            viewer::ViewerSource {
+                content: self.preview.snapshot(&entry),
+                selected: entry,
+                files: self.current.visible_entries(),
+                ui,
+                sort: self.sort_mode.get(),
+                context: self.location_label.text().to_string(),
+                resources,
+            },
+        );
+    }
+
     fn open_entry(self: &Rc<Self>, entry: FileEntry) {
         if entry.kind == FileKind::Directory {
             self.navigate_to(entry.location, None);
@@ -1914,7 +1954,7 @@ impl Browser {
                 match result {
                     Ok(session) => {
                         let root = session.root.clone();
-                        browser.archive_sessions.borrow_mut().push(session);
+                        browser.archive_sessions.borrow_mut().push(Rc::new(session));
                         browser.navigate_to(root, None);
                     }
                     Err(error) if error.contains("cancelled") => browser
@@ -2201,7 +2241,7 @@ impl Browser {
             .archive_sessions
             .borrow()
             .last()
-            .is_some_and(ArchiveSession::changed);
+            .is_some_and(|session| session.changed());
         if !changed {
             self.finish_leave_archive(false);
             return;
@@ -2624,6 +2664,11 @@ fn install_about_action(app: &adw::Application) {
             dialog.add_link("GridCraft — spreadsheet previews", "https://github.com/storytold/gridcraft");
             dialog.add_legal_section("WordCraft", None, gtk::License::Custom, Some(include_str!("../../../data/licenses/wordcraft/LICENSE-MIT")));
             dialog.add_legal_section("GridCraft", None, gtk::License::Custom, Some(include_str!("../../../data/licenses/gridcraft/LICENSE-MIT")));
+            dialog.add_credit_section(Some("Markdown preview styling"), &[
+                "Sindre Sorhus and github-markdown-css contributors https://github.com/sindresorhus/github-markdown-css",
+            ]);
+            dialog.add_legal_section("GitHub Markdown CSS", None, gtk::License::Custom,
+                Some(include_str!("../../../data/licenses/github-markdown-css/LICENSE")));
             dialog.present(Some(&window));
         });
         app.add_action(&about);
@@ -2780,25 +2825,30 @@ fn default_places(bookmarks: &[pathpilot_config::Bookmark]) -> Vec<PlaceBinding>
     places
 }
 
-fn document_page_direction(key: gdk::Key, modifiers: gdk::ModifierType) -> Option<bool> {
-    let modifiers = modifiers
-        & (gdk::ModifierType::SHIFT_MASK
-            | gdk::ModifierType::CONTROL_MASK
-            | gdk::ModifierType::ALT_MASK
-            | gdk::ModifierType::SUPER_MASK
-            | gdk::ModifierType::META_MASK);
-    match (key, modifiers) {
-        (gdk::Key::Page_Up, gdk::ModifierType::CONTROL_MASK) => Some(false),
-        (gdk::Key::Page_Down, gdk::ModifierType::CONTROL_MASK) => Some(true),
-        (gdk::Key::n | gdk::Key::bracketright, modifiers) if modifiers.is_empty() => Some(true),
-        (gdk::Key::N, modifiers)
-            if modifiers.is_empty() || modifiers == gdk::ModifierType::SHIFT_MASK =>
-        {
-            Some(false)
-        }
-        (gdk::Key::bracketleft, modifiers) if modifiers.is_empty() => Some(false),
-        _ => None,
-    }
+fn keyboard_reference(keymap: &pathpilot_config::Keymap) -> Vec<(String, &'static str)> {
+    let mut reference = keymap.command_reference();
+    reference.retain(|(keys, _)| !keys.starts_with('g'));
+    reference.extend([
+        ("b".to_owned(), "Bookmark current directory"),
+        ("Ctrl+L".to_owned(), "Open location URI"),
+        ("Ctrl+R".to_owned(), "Reload current directory"),
+        ("e".to_owned(), "Edit in Neovim"),
+        ("f".to_owned(), "Find by name"),
+        ("/".to_owned(), "Filter by name"),
+        ("Space".to_owned(), "Toggle selection"),
+        ("s …".to_owned(), "Change sorting"),
+        ("t c / t x".to_owned(), "Create / close tab"),
+        ("t 1…9".to_owned(), "Switch tab"),
+        ("t s".to_owned(), "Select tab with j/k"),
+        (".".to_owned(), "Toggle hidden items"),
+        ("o t".to_owned(), "Toggle terminal"),
+        ("o v".to_owned(), "Open separate viewer"),
+        ("o …".to_owned(), "Open with application"),
+        (":".to_owned(), "Command palette"),
+        ("F1 / ?".to_owned(), "Hide hints"),
+    ]);
+    reference.push(("g …".to_owned(), "Places and bookmarks"));
+    reference
 }
 
 fn install_keyboard_controller(
@@ -2817,36 +2867,7 @@ fn install_keyboard_controller(
             .borrow_mut()
             .set_key_labels(keymap.key_labels());
     }
-    let places = browser.upgrade().map_or_else(
-        || default_places(&[]),
-        |browser| default_places(&browser.settings.borrow().bookmarks),
-    );
-    let mut reference = keymap.command_reference();
-    reference.retain(|(keys, _)| !keys.starts_with('g'));
-    reference.extend([
-        ("b".to_owned(), "Bookmark current directory"),
-        ("Ctrl+L".to_owned(), "Open location URI"),
-        ("Ctrl+R".to_owned(), "Reload current directory"),
-        ("e".to_owned(), "Edit in Neovim"),
-        ("f".to_owned(), "Find by name"),
-        ("/".to_owned(), "Filter by name"),
-        ("Space".to_owned(), "Toggle selection"),
-        ("s …".to_owned(), "Change sorting"),
-        ("t c / t x".to_owned(), "Create / close tab"),
-        ("t 1…9".to_owned(), "Switch tab"),
-        ("t s".to_owned(), "Select tab with j/k"),
-        (".".to_owned(), "Toggle hidden items"),
-        ("o t".to_owned(), "Toggle terminal"),
-        ("o …".to_owned(), "Open with application"),
-        (":".to_owned(), "Command palette"),
-        ("F1 / ?".to_owned(), "Hide hints"),
-    ]);
-    reference.extend(places.iter().map(|place| {
-        (
-            format!("g {}", place.key),
-            Box::leak(place.label.clone().into_boxed_str()) as &'static str,
-        )
-    }));
+    let reference = keyboard_reference(&keymap);
     let command_reference = Rc::new(reference);
     let (settings, settings_path) = browser.upgrade().map_or_else(
         || {
@@ -3238,6 +3259,8 @@ fn install_keyboard_controller(
                 {
                     if character == 't' {
                         browser.toggle_terminal();
+                    } else if character == 'v' {
+                        browser.open_viewer(&window);
                     } else if character == 'e'
                         && let Some(entry) = entry
                     {
@@ -3320,12 +3343,7 @@ fn install_keyboard_controller(
                 parser.borrow_mut().reset();
                 place_pending_for_keys.set(true);
                 let places = default_places(&settings.borrow().bookmarks);
-                populate_hint_grid(
-                    &key_hints,
-                    places
-                        .iter()
-                        .map(|place| (place.key.to_string(), place.label.as_str())),
-                );
+                show_places(&key_hints, &places, false);
                 key_hints.set_visible(true);
                 return glib::Propagation::Stop;
             }
@@ -3333,21 +3351,7 @@ fn install_keyboard_controller(
                 parser.borrow_mut().reset();
                 bookmark_pending_for_keys.set(true);
                 let places = default_places(&settings.borrow().bookmarks);
-                let occupied: Vec<_> = places
-                    .iter()
-                    .map(|place| {
-                        (
-                            place.key.to_string(),
-                            format!("{} (used)", place.label),
-                        )
-                    })
-                    .collect();
-                populate_hint_grid(
-                    &key_hints,
-                    occupied
-                        .iter()
-                        .map(|(key, label)| (key.clone(), label.as_str())),
-                );
+                show_places(&key_hints, &places, true);
                 key_hints.set_visible(true);
                 if let Some(browser) = browser.upgrade() {
                     browser
@@ -3407,6 +3411,9 @@ fn install_keyboard_controller(
                         .collect();
                     if entry.is_some() {
                         hints.push(("e".to_owned(), "Choose another application…".to_owned()));
+                        if entry.as_ref().is_some_and(viewer::can_view) {
+                            hints.push(("v".to_owned(), "Open separate viewer".to_owned()));
+                        }
                     }
                     hints.push(("t".to_owned(), "Toggle terminal".to_owned()));
                     populate_hint_grid(
@@ -3562,11 +3569,186 @@ fn show_filter_query(grid: &gtk::Grid, query: &str) {
 }
 
 fn show_command_reference(grid: &gtk::Grid, reference: &[(String, &'static str)]) {
-    populate_hint_grid(
-        grid,
-        reference.iter().map(|(keys, label)| (keys.clone(), *label)),
-    );
+    let mut groups: Vec<(&str, Vec<(String, String)>)> = [
+        "Navigation",
+        "Search & sorting",
+        "Files",
+        "Clipboard & selection",
+        "Preview & open",
+        "Tabs",
+        "Places & bookmarks",
+        "Interface",
+    ]
+    .into_iter()
+    .map(|name| (name, Vec::new()))
+    .collect();
+    for (keys, label) in reference {
+        let group = match *label {
+            "Down" | "Up" | "Parent" | "Open" | "Last item" | "First item" => 0,
+            "Find by name"
+            | "Filter by name"
+            | "Open location URI"
+            | "Reload current directory"
+            | "Change sorting" => 1,
+            "Create file" | "Create directory" | "Trash" | "Add (create)" | "Rename"
+            | "Delete (trash)" | "Delete permanently" => 2,
+            "Copy filename"
+            | "Copy directory path"
+            | "Copy full path"
+            | "Cut"
+            | "Copy"
+            | "Cut (move)"
+            | "Paste"
+            | "Visual selection"
+            | "Toggle selection" => 3,
+            "Full preview"
+            | "Edit in Neovim"
+            | "Toggle terminal"
+            | "Open separate viewer"
+            | "Open with application" => 4,
+            "Create / close tab" | "Switch tab" | "Select tab with j/k" => 5,
+            "Bookmark current directory" | "Places and bookmarks" => 6,
+            _ => 7,
+        };
+        if let Some((existing, _)) = groups[group].1.iter_mut().find(|(_, text)| text == label) {
+            if existing != keys {
+                *existing = format!("{existing} / {keys}");
+            }
+        } else {
+            groups[group].1.push((keys.clone(), (*label).to_owned()));
+        }
+    }
+    groups[4].1.extend([
+        (
+            "n / N".to_owned(),
+            "Next / previous document page".to_owned(),
+        ),
+        ("u".to_owned(), "Load full preview".to_owned()),
+        (
+            "j / k · q".to_owned(),
+            "Separate viewer: files · close".to_owned(),
+        ),
+    ]);
+    populate_grouped_hints(grid, groups);
     grid.set_visible(true);
+}
+
+fn show_places(grid: &gtk::Grid, places: &[PlaceBinding], occupied: bool) {
+    let mut groups: Vec<(&str, Vec<(String, String)>)> = [
+        "Navigation & local places",
+        "Network connections",
+        "Your bookmarks",
+    ]
+    .into_iter()
+    .map(|name| (name, Vec::new()))
+    .collect();
+    for place in places {
+        let group = if matches!(place.target, PlaceTarget::Remote { .. }) {
+            1
+        } else if matches!(place.key, 'g' | 'h' | 'd' | 'r') {
+            0
+        } else {
+            2
+        };
+        groups[group].1.push((
+            place.key.to_string(),
+            if occupied {
+                format!("{} (used)", place.label)
+            } else {
+                place.label.clone()
+            },
+        ));
+    }
+    if groups[2].1.is_empty() {
+        groups[2]
+            .1
+            .push((String::new(), "No bookmarks yet".to_owned()));
+    }
+    if occupied {
+        groups.push((
+            "Add bookmark",
+            vec![(
+                "a–z / 0–9".to_owned(),
+                "Press an unused key · Esc cancel".to_owned(),
+            )],
+        ));
+    }
+    populate_grouped_hints(grid, groups);
+}
+
+fn populate_grouped_hints(grid: &gtk::Grid, groups: Vec<(&str, Vec<(String, String)>)>) {
+    while let Some(child) = grid.first_child() {
+        grid.remove(&child);
+    }
+    let flow = gtk::FlowBox::builder()
+        .selection_mode(gtk::SelectionMode::None)
+        .homogeneous(false)
+        .min_children_per_line(1)
+        .max_children_per_line(8)
+        .valign(gtk::Align::Start)
+        .vexpand(false)
+        .column_spacing(12)
+        .row_spacing(8)
+        .hexpand(true)
+        .build();
+    flow.add_css_class("shortcut-groups");
+    for (heading, entries) in groups
+        .into_iter()
+        .filter(|(_, entries)| !entries.is_empty())
+    {
+        let section = gtk::Box::new(gtk::Orientation::Vertical, 3);
+        section.set_hexpand(true);
+        section.set_valign(gtk::Align::Start);
+        let title = gtk::Label::builder().label(heading).xalign(0.0).build();
+        title.add_css_class("shortcut-heading");
+        section.append(&title);
+        for (keys, description) in entries {
+            let row = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+            let key = gtk::Label::builder()
+                .label(keys)
+                .xalign(0.0)
+                .width_chars(8)
+                .build();
+            key.add_css_class("key-hint-key");
+            let description = match description.as_str() {
+                "Copy directory path" => "Copy folder path",
+                "Open location URI" => "Location…",
+                "Reload current directory" => "Reload",
+                "Create / close tab" => "Create / close",
+                "Switch tab" => "Switch",
+                "Select tab with j/k" => "Select with j/k",
+                "Bookmark current directory" => "Add bookmark",
+                "Places and bookmarks" => "Go to…",
+                "Next / previous document page" => "Next / previous page",
+                "Load full preview" => "Full preview",
+                "Separate viewer: files · close" => "Viewer: files · close",
+                "Open separate viewer" => "Separate viewer",
+                "Open with application" => "Open with…",
+                "Toggle terminal" => "Terminal",
+                "Cycle pane layout" => "Panel layout",
+                "Toggle hidden items" => "Hidden files",
+                "Change sorting" => "Sort…",
+                "Edit in Neovim" => "Neovim",
+                _ => &description,
+            };
+            let text = gtk::Label::builder()
+                .label(description)
+                .xalign(0.0)
+                .wrap(true)
+                .max_width_chars(18)
+                .hexpand(true)
+                .build();
+            row.append(&key);
+            row.append(&text);
+            section.append(&row);
+        }
+        section.set_margin_bottom(4);
+        flow.insert(&section, -1);
+        if let Some(child) = section.parent() {
+            child.set_focusable(false);
+        }
+    }
+    grid.attach(&flow, 0, 0, 1, 1);
 }
 
 fn populate_hint_grid<'a>(grid: &gtk::Grid, hints: impl IntoIterator<Item = (String, &'a str)>) {
@@ -3735,7 +3917,7 @@ fn format_permissions(mode: u32) -> String {
 fn install_hint_css() {
     let provider = gtk::CssProvider::new();
     provider.load_from_string(
-        ".pathpilot-tab-active { background: alpha(@accent_bg_color, 0.22); color: @window_fg_color; border-bottom: 2px solid @accent_color; font-weight: bold; } .interaction-panel-content { background-color: @window_bg_color; border-top: 1px solid alpha(@window_fg_color, 0.16); padding: 10px 16px; } .operation-shelf { background-color: alpha(@success_color, 0.18); border-top: 1px solid alpha(@success_color, 0.48); } .operation-shelf progressbar trough { min-height: 8px; min-width: 260px; border-radius: 999px; } .operation-shelf progressbar progress { min-height: 8px; border-radius: 999px; background-color: @success_color; } .key-hint-key { font-family: monospace; font-weight: bold; color: @accent_color; } .archive-metadata { color: @accent_color; font-weight: bold; } .archive-location { color: @accent_color; font-weight: bold; } .preview-spinner { color: @accent_color; min-width: 64px; min-height: 64px; } .status-line { padding: 7px 10px; font-family: 'Symbols Nerd Font Mono', 'JetBrainsMono Nerd Font', 'Noto Sans Mono', monospace; } .git-status { font-weight: bold; } .status-normal { background: #42566a; color: #f4f7fa; } .status-visual { background: #8a752e; color: #fff8dc; } .status-find { background: #376b5b; color: #f1fff9; } .status-command { background: #604c7a; color: #faf5ff; } .status-input { background: #496278; color: #f4f8ff; } .status-edit { background: #654c3d; color: #fff7ed; }",
+        ".shortcut-groups { font-size: 0.94em; } .shortcut-groups > flowboxchild { padding: 2px 4px; } .shortcut-heading { font-weight: bold; color: @accent_color; padding-bottom: 3px; border-bottom: 1px solid alpha(@accent_color, 0.25); margin-bottom: 2px; } .pathpilot-tab-active { background: alpha(@accent_bg_color, 0.22); color: @window_fg_color; border-bottom: 2px solid @accent_color; font-weight: bold; } .interaction-panel-content { background-color: @window_bg_color; border-top: 1px solid alpha(@window_fg_color, 0.16); padding: 10px 16px; } .operation-shelf { background-color: alpha(@success_color, 0.18); border-top: 1px solid alpha(@success_color, 0.48); } .operation-shelf progressbar trough { min-height: 8px; min-width: 260px; border-radius: 999px; } .operation-shelf progressbar progress { min-height: 8px; border-radius: 999px; background-color: @success_color; } .key-hint-key { font-family: monospace; font-weight: bold; color: @accent_color; } .archive-metadata { color: @accent_color; font-weight: bold; } .archive-location { color: @accent_color; font-weight: bold; } .preview-spinner { color: @accent_color; min-width: 64px; min-height: 64px; } .status-line { padding: 7px 10px; font-family: 'Symbols Nerd Font Mono', 'JetBrainsMono Nerd Font', 'Noto Sans Mono', monospace; } .git-status { font-weight: bold; } .status-normal { background: #42566a; color: #f4f7fa; } .status-visual { background: #8a752e; color: #fff8dc; } .status-find { background: #376b5b; color: #f1fff9; } .status-command { background: #604c7a; color: #faf5ff; } .status-input { background: #496278; color: #f4f8ff; } .status-edit { background: #654c3d; color: #fff7ed; }",
     );
     if let Some(display) = gdk::Display::default() {
         gtk::style_context_add_provider_for_display(

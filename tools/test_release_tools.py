@@ -80,6 +80,18 @@ class ReleaseToolsTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 check_notices(root, expected)
 
+    def test_engine_notices_allow_other_bundled_license_directories(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            for name in ["wordcraft/MIT", "github-markdown-css/LICENSE"]:
+                path = root / "data/licenses" / name
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(b"copyright")
+            check_notices(root, {"wordcraft/MIT": b"copyright"})
+            (root / "data/licenses/wordcraft/extra").write_bytes(b"new")
+            with self.assertRaises(ValueError):
+                check_notices(root, {"wordcraft/MIT": b"copyright"})
+
     def test_pins_reject_mismatched_engine_modules(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

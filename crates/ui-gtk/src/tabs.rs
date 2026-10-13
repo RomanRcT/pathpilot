@@ -48,6 +48,7 @@ impl Workspace {
         header.pack_start(&hidden_button);
         header.pack_start(&terminal_button);
         let menu = gio::Menu::new();
+        menu.append(Some("Keyboard Shortcuts"), Some("win.keyboard-shortcuts"));
         menu.append(Some("About PathPilot"), Some("app.about"));
         header.pack_end(
             &gtk::MenuButton::builder()
@@ -121,6 +122,43 @@ impl Workspace {
                 browser.toggle_terminal();
             }
         });
+        let shortcuts = gio::SimpleAction::new("keyboard-shortcuts", None);
+        let weak_window = window.downgrade();
+        shortcuts.connect_activate(move |_, _| {
+            let Some(window) = weak_window.upgrade() else {
+                return;
+            };
+            let (keymap, _) =
+                pathpilot_config::load_or_default(pathpilot_config::default_path().as_deref());
+            let grid = gtk::Grid::builder()
+                .column_spacing(24)
+                .row_spacing(16)
+                .margin_start(24)
+                .margin_end(24)
+                .margin_top(24)
+                .margin_bottom(24)
+                .build();
+            show_command_reference(&grid, &keyboard_reference(&keymap));
+            let scroll = gtk::ScrolledWindow::builder()
+                .hscrollbar_policy(gtk::PolicyType::Never)
+                .child(&grid)
+                .vexpand(true)
+                .build();
+            let title = adw::WindowTitle::new("Keyboard Shortcuts", "PathPilot");
+            let header = adw::HeaderBar::new();
+            header.set_title_widget(Some(&title));
+            let toolbar = adw::ToolbarView::new();
+            toolbar.add_top_bar(&header);
+            toolbar.set_content(Some(&scroll));
+            let dialog = adw::Dialog::builder()
+                .title("Keyboard Shortcuts")
+                .content_width((window.width() - 48).max(600))
+                .content_height((window.height() - 80).max(400))
+                .child(&toolbar)
+                .build();
+            dialog.present(Some(&window));
+        });
+        window.add_action(&shortcuts);
         let weak = Rc::downgrade(&workspace);
         window.connect_map(move |_| {
             if let Some(browser) = weak
@@ -247,13 +285,50 @@ impl Workspace {
         let interaction = gtk::Box::new(gtk::Orientation::Vertical, 0);
         interaction.add_css_class("interaction-panel");
         let hints = gtk::Grid::builder()
-            .halign(gtk::Align::Center)
+            .halign(gtk::Align::Fill)
+            .hexpand(true)
             .column_spacing(12)
             .row_spacing(6)
             .visible(false)
             .build();
         hints.add_css_class("interaction-panel-content");
-        interaction.append(&hints);
+        let hint_scroll = gtk::ScrolledWindow::builder()
+            .hscrollbar_policy(gtk::PolicyType::Automatic)
+            .vscrollbar_policy(gtk::PolicyType::Automatic)
+            .propagate_natural_height(true)
+            .max_content_height((self.settings.borrow().ui.window_height / 2).max(200))
+            .child(&hints)
+            .build();
+        hints
+            .bind_property("visible", &hint_scroll, "visible")
+            .sync_create()
+            .build();
+        hint_scroll.set_valign(gtk::Align::Start);
+        hint_scroll.set_vexpand(false);
+        let weak_hints = hints.downgrade();
+        let weak_scroll = hint_scroll.downgrade();
+        let weak_window = window.downgrade();
+        glib::timeout_add_local(Duration::from_millis(250), move || {
+            let (Some(scroll), Some(window), Some(hints)) = (
+                weak_scroll.upgrade(),
+                weak_window.upgrade(),
+                weak_hints.upgrade(),
+            ) else {
+                return glib::ControlFlow::Break;
+            };
+            if !hints.is_visible() || scroll.width() <= 0 {
+                return glib::ControlFlow::Continue;
+            }
+            // FlowBox's unconstrained natural height can describe a single column.
+            // Measure at the allocated width so wrapping determines the actual height.
+            let (_, natural, _, _) = hints.measure(gtk::Orientation::Vertical, scroll.width());
+            let limit = natural.min((window.height() / 2).max(200)).max(1);
+            if scroll.max_content_height() != limit {
+                scroll.set_max_content_height(limit);
+            }
+            glib::ControlFlow::Continue
+        });
+        interaction.append(&hint_scroll);
         interaction.append(&browser.input_bar);
         root.append(&interaction);
         root.append(&browser.operation_shelf);
@@ -390,6 +465,8 @@ impl Workspace {
             || *browser.mode.borrow() == AppMode::Command
         {
             browser.input_entry.grab_focus();
+        } else if browser.pane_layout.get() == PaneLayout::PreviewOnly {
+            browser.preview.focus_content();
         } else if browser.directory_loading.get() || !browser.current.list.grab_focus() {
             browser.focus_current_pane();
         }
@@ -634,6 +711,107 @@ mod tests {
         let first = workspace.active_browser().unwrap();
         wait_until(|| !first.directory_loading.get());
         pump_for(Duration::from_millis(100));
+        let reference = keyboard_reference(&pathpilot_config::Keymap::defaults());
+        let grid = gtk::Grid::new();
+        show_command_reference(&grid, &reference);
+        let headings: Vec<_> = (0..8)
+            .map(|index| {
+                grid.child_at(0, 0)
+                    .unwrap()
+                    .downcast::<gtk::FlowBox>()
+                    .unwrap()
+                    .child_at_index(index)
+                    .unwrap()
+                    .child()
+                    .unwrap()
+                    .first_child()
+                    .unwrap()
+                    .downcast::<gtk::Label>()
+                    .unwrap()
+                    .text()
+                    .to_string()
+            })
+            .collect();
+        assert_eq!(
+            headings,
+            [
+                "Navigation",
+                "Search & sorting",
+                "Files",
+                "Clipboard & selection",
+                "Preview & open",
+                "Tabs",
+                "Places & bookmarks",
+                "Interface"
+            ]
+        );
+        let bookmark = pathpilot_config::Bookmark {
+            key: "m".to_owned(),
+            label: "My work".to_owned(),
+            uri: first_location.uri().to_owned(),
+        };
+        let places = default_places(&[bookmark]);
+        show_places(&grid, &places, true);
+        assert_eq!(
+            grid.child_at(0, 0)
+                .unwrap()
+                .downcast::<gtk::FlowBox>()
+                .unwrap()
+                .child_at_index(2)
+                .unwrap()
+                .child()
+                .unwrap()
+                .first_child()
+                .unwrap()
+                .downcast::<gtk::Label>()
+                .unwrap()
+                .text(),
+            "Your bookmarks"
+        );
+        if std::env::var_os("PATHPILOT_TEST_SHORTCUTS_SCREENSHOT").is_some() {
+            window.set_default_size(1800, 1000);
+            pump_for(Duration::from_millis(250));
+        }
+        window
+            .lookup_action("keyboard-shortcuts")
+            .unwrap()
+            .activate(None);
+        pump_for(Duration::from_millis(100));
+        let dialog = window
+            .visible_dialog()
+            .expect("Keyboard Shortcuts menu opens a dialog");
+        assert_eq!(dialog.title(), "Keyboard Shortcuts");
+        if let Some(output) = std::env::var_os("PATHPILOT_TEST_SHORTCUTS_SCREENSHOT") {
+            pump_for(Duration::from_millis(250));
+            let paintable = gtk::WidgetPaintable::new(Some(&window));
+            let snapshot = gtk::Snapshot::new();
+            paintable.snapshot(&snapshot, window.width() as f64, window.height() as f64);
+            let node = snapshot.to_node().unwrap();
+            window
+                .renderer()
+                .unwrap()
+                .render_texture(&node, None)
+                .save_to_png(output)
+                .unwrap();
+        }
+        dialog.close();
+        pump_for(Duration::from_millis(250));
+        if let Some(output) = std::env::var_os("PATHPILOT_TEST_HINTS_SCREENSHOT") {
+            key(&workspace, gdk::Key::F1);
+            pump_for(Duration::from_millis(600));
+            let paintable = gtk::WidgetPaintable::new(Some(&window));
+            let snapshot = gtk::Snapshot::new();
+            paintable.snapshot(&snapshot, window.width() as f64, window.height() as f64);
+            window
+                .renderer()
+                .unwrap()
+                .render_texture(snapshot.to_node().unwrap(), None)
+                .save_to_png(output)
+                .unwrap();
+            key(&workspace, gdk::Key::F1);
+            window.set_default_size(1100, 700);
+            pump_for(Duration::from_millis(600));
+        }
         first.current.select_position(40);
         first.current.toggle_selection();
         let selected = first.current.selected_entries();

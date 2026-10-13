@@ -16,4 +16,11 @@ Each of the parent, current, and preview columns owns a persistent `DirectoryPan
 
 The preview column is a `GtkStack`: directory selections use an embedded `DirectoryPane`, while text, image, metadata, and error results use specialized views. Selection changes immediately show a loading state, invalidate and cancel the prior preview generation, and schedule expensive work after the configurable debounce (75 ms by default).
 
-Bounded text is processed in a worker thread. `syntect` returns character-offset style spans and `pulldown-cmark` returns semantic Markdown spans; neither crate creates GTK objects. The main thread converts those typed spans into `GtkTextTag` values. Completed file previews enter a 24-entry LRU keyed by URI, size, and modification time.
+Bounded text is processed in a worker thread. `syntect` returns character-offset style spans and `pulldown-cmark` produces inert HTML with raw HTML discarded and script URLs rejected; neither crate creates GTK objects. The main thread converts source spans into `GtkTextTag` values and displays Markdown in a lazy WebKitGTK 6.0 view with bundled Compact, GitHub or Reading CSS. Markdown page scripts are disabled. Completed file previews enter a 24-entry LRU keyed by URI, size, and modification time.
+
+Independent viewer windows reuse `PreviewPane` with their own directory model,
+file cursor, key controller and preview state. Opening a document can clone its
+`DocumentPreview` session/page image while keeping page selection independent.
+Archive sessions use shared ownership so viewer windows can retain extracted
+assets after their source browser/tab closes. Each viewer cancels its work and
+releases these resource leases when it closes.

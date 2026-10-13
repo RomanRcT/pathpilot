@@ -17,6 +17,7 @@ BuildRequires:  pkgconf-pkg-config
 BuildRequires:  pkgconfig(libadwaita-1) >= 1.5
 BuildRequires:  pkgconfig(gtk4) >= 4.12
 BuildRequires:  pkgconfig(vte-2.91-gtk4)
+BuildRequires:  pkgconfig(webkitgtk-6.0)
 BuildRequires:  rust
 Recommends:     poppler-utils
 Recommends:     libreoffice-writer
@@ -49,6 +50,7 @@ appstreamcli validate --no-net %{buildroot}%{_metainfodir}/io.github.RomanRcT.Pa
 %license LICENSE
 %license %{_datadir}/licenses/pathpilot/wordcraft/
 %license %{_datadir}/licenses/pathpilot/gridcraft/
+%license %{_datadir}/licenses/pathpilot/github-markdown-css/
 %doc README.md CHANGELOG.md
 %{_bindir}/pathpilot
 %{_datadir}/applications/io.github.RomanRcT.PathPilot.desktop

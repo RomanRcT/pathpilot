@@ -60,7 +60,11 @@ def expected_notices(sources):
 
 def check_notices(root, expected):
     directory = root / "data/licenses"
-    actual = {str(path.relative_to(directory)) for path in directory.rglob("*") if path.is_file()}
+    # Other bundled components have their own notices. Audit only the snapshots
+    # represented by this check, without treating unrelated licenses as extras.
+    roots = {name.split("/", 1)[0] for name in expected if "/" in name}
+    actual = {str(path.relative_to(directory)) for path in directory.rglob("*")
+              if path.is_file() and (not roots or path.relative_to(directory).parts[0] in roots)}
     differences = set(expected) ^ actual
     differences.update(name for name, data in expected.items()
                        if not (directory / name).is_file() or (directory / name).read_bytes() != data)

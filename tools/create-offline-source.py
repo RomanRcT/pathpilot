@@ -70,7 +70,7 @@ def main():
         (stage / "OFFLINE-BUILD.md").write_text(
             "# Offline source build\n\n"
             "This archive includes the locked registry/Git crates, WordCraft assets and license notices.\n"
-            "Install Rust 1.90+ and the GTK 4, libadwaita, VTE GTK4, Cairo/Pango development packages first.\n"
+            "Install Rust 1.90+ and the GTK 4, libadwaita, VTE GTK4, WebKitGTK 6.0, Cairo/Pango development packages first.\n"
             "From this directory run:\n\n"
             "```sh\ncargo build --release --locked --offline\n```\n\n"
             "No access to crates.io or the Craft GitHub repositories is needed for this build.\n"

@@ -70,7 +70,7 @@ jobs:
           ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
 
       - name: Install native build dependencies
-        run: sudo apt-get update && sudo apt-get install --yes libgtk-4-dev libadwaita-1-dev libvte-2.91-gtk4-dev pkg-config
+        run: sudo apt-get update && sudo apt-get install --yes libgtk-4-dev libadwaita-1-dev libvte-2.91-gtk4-dev libwebkitgtk-6.0-dev pkg-config
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -102,7 +102,7 @@ jobs:
           dnf install --assumeyes
           appstream cargo desktop-file-utils gcc git gzip make pkgconf-pkg-config rpm-build rust tar
           libadwaita-devel
-          gtk4-devel vte291-gtk4-devel
+          gtk4-devel vte291-gtk4-devel webkitgtk6.0-devel
 
       - name: Check out repository
         uses: actions/checkout@v4

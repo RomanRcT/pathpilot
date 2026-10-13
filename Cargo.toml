@@ -36,7 +36,8 @@ tempfile = "3"
 serde = { version = "1", features = ["derive"] }
 toml = "0.9"
 syntect = { version = "5.3", default-features = false, features = ["default-fancy"] }
-pulldown-cmark = { version = "0.13.4", default-features = false }
+pulldown-cmark = { version = "0.13.4", default-features = false, features = ["html"] }
+webkit6 = "0.5"
 
 # Pin the document engines to fixed revisions; no editor UI dependencies.
 wordcraft-doc = { git = "https://github.com/storytold/wordcraft", rev = "159b84f54c74e9e82fb3109b758ae7dd6f4e3ab0" }

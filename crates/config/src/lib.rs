@@ -123,6 +123,7 @@ pub struct UiSettings {
     pub preview_delay_ms: u64,
     pub query_commit_delay_ms: u64,
     pub tab_switch_delay_ms: u64,
+    pub markdown_theme: String,
     pub preview_line_numbers: bool,
     pub color_scheme: String,
     pub sort_key: String,
@@ -148,6 +149,7 @@ impl Default for UiSettings {
             preview_delay_ms: 75,
             query_commit_delay_ms: 800,
             tab_switch_delay_ms: 500,
+            markdown_theme: "compact".to_owned(),
             preview_line_numbers: true,
             color_scheme: "system".to_owned(),
             sort_key: "name".to_owned(),
@@ -480,6 +482,19 @@ mod tests {
         assert_eq!(settings.ui.tab_switch_delay_ms, 0);
         save_settings(&path, &settings).unwrap();
         assert_eq!(load_settings(Some(&path)).0.ui.tab_switch_delay_ms, 0);
+    }
+
+    #[test]
+    fn markdown_theme_defaults_and_round_trips() {
+        assert_eq!(UiSettings::default().markdown_theme, "compact");
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        for theme in ["compact", "github", "reading"] {
+            let mut settings = Settings::default();
+            settings.ui.markdown_theme = theme.to_owned();
+            save_settings(&path, &settings).unwrap();
+            assert_eq!(load_settings(Some(&path)).0.ui.markdown_theme, theme);
+        }
     }
 
     #[test]

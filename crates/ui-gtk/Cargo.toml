@@ -18,3 +18,14 @@ pathpilot-preview.workspace = true
 tracing.workspace = true
 vte.workspace = true
 tempfile.workspace = true
+webkit6.workspace = true
+
+[[test]]
+name = "markdown-webkit"
+path = "tests/markdown-webkit.rs"
+harness = false
+
+[[test]]
+name = "viewer-window"
+path = "tests/viewer-window.rs"
+harness = false

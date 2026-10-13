@@ -62,7 +62,7 @@ credentials and build outputs. A `.sha256` file accompanies it.
 The verifier checks hashes and builds with an empty Cargo cache and
 `--locked --offline`. Users can unpack the archive and run
 `cargo build --release --locked --offline`, without access to crates.io or the
-engine repositories. Rust 1.90+ and native GTK/libadwaita/VTE development
+engine repositories. Rust 1.90+ and native GTK/libadwaita/VTE/WebKitGTK 6.0 development
 packages must already be installed; the archive does not bundle a compiler or
 system packages.
 

@@ -9,7 +9,7 @@ an embedded shell, and an embedded Neovim editor.
 SFTP/SMB operations are usable, while accessibility review and broader desktop
 validation are still in progress. See
 [`pathpilot_project_plan.md`](pathpilot_project_plan.md) for the long-term plan.
-PathPilot requires GTK 4.12 or newer, libadwaita 1.5 or newer, and GTK4 VTE.
+PathPilot requires GTK 4.12 or newer, libadwaita 1.5 or newer, GTK4 VTE, and WebKitGTK 6.0.
 
 ## Current features
 
@@ -62,7 +62,7 @@ PathPilot requires GTK 4.12 or newer, libadwaita 1.5 or newer, and GTK4 VTE.
 - MIME-aware Open With history backed by the native GTK/GNOME application chooser.
 - Embedded Neovim editing for local text files through a GTK4 VTE terminal.
 - Toggleable hidden items and an embedded shell terminal synchronized with directory navigation.
-- Theme-aware source and Markdown previews with configurable line numbers.
+- Theme-aware source previews with configurable line numbers and HTML Markdown previews with three bundled styles.
 - Native libadwaita application window, header bar, About dialog, and system color-scheme support.
 
 The first launch opens the directory from which PathPilot is started. Later
@@ -155,7 +155,7 @@ access to the Flatpak portal service.
 Rust 1.90 or newer is required. Install the native dependencies:
 
 ```bash
-sudo dnf install rust cargo rustfmt clippy gtk4-devel libadwaita-devel vte291-gtk4-devel gcc pkgconf-pkg-config neovim 7zip gvfs gvfs-smb
+sudo dnf install rust cargo rustfmt clippy gtk4-devel libadwaita-devel vte291-gtk4-devel webkitgtk6.0-devel gcc pkgconf-pkg-config neovim 7zip gvfs gvfs-smb
 ```
 
 Optional document preview dependencies:
@@ -202,7 +202,7 @@ On Fedora, install the packaging toolchain and native development headers:
 
 ```bash
 sudo dnf install cargo rust rpm-build make gcc pkgconf-pkg-config \
-  gtk4-devel libadwaita-devel vte291-gtk4-devel \
+  gtk4-devel libadwaita-devel vte291-gtk4-devel webkitgtk6.0-devel \
   desktop-file-utils appstream
 ```
 
@@ -236,6 +236,7 @@ Preview line numbers and the application color scheme can be configured under
 [ui]
 preview_delay_ms = 75    # wait before loading the selected item's preview
 tab_switch_delay_ms = 500 # t s: accept after idle; 0 requires Enter
+markdown_theme = "compact" # compact, github, reading
 query_commit_delay_ms = 800  # apply a find or filter query once typing stops;
                              # 0 disables it, so only Enter and Escape apply it
 keyboard_confirmations = true # y confirms; n or Escape cancels; false restores dialogs
@@ -281,3 +282,51 @@ blocked while selecting tabs.
 A tab with an active file operation cannot be closed until it finishes. Archive
 changes use the existing save/discard confirmation; opening a new tab from an
 archive starts in the directory containing that archive.
+
+## Markdown previews
+
+Markdown is parsed with pulldown-cmark and displayed as HTML through WebKitGTK
+6.0. The default `markdown_theme = "compact"` uses a system font and close
+spacing for the preview pane. In the existing `[ui]` section of
+`~/.config/pathpilot/config.toml`, choose `"github"` for GitHub styling or
+`"reading"` for larger serif text. Close PathPilot before editing settings.
+All three styles follow the application's light/dark color scheme, including
+changes while a document is open. CSS is bundled; it is not fetched at runtime.
+
+Tables, nested lists, task lists, strikethrough, footnotes, and local images
+relative to the Markdown file are supported. Raw HTML and page JavaScript are
+disabled; remote images are not automatically downloaded. Relative images in
+remote/GVfs Markdown files are not loaded. Clicked links open through the system
+handler; same-document fragment links stay in the preview. A truncated preview
+shows a notice; `u` loads the full document. Automatic Markdown preview renders
+up to 256 KiB as HTML; the 24 KiB syntax-highlighting budget for source files
+does not apply to Markdown. Code fences are formatted as code
+blocks without additional syntax highlighting.
+
+Use `z` to switch to Preview only; the HTML view then receives focus for native
+scrolling with Page Up/Page Down and arrow keys. Normal file navigation and the
+`t` sequences continue to be handled by PathPilot.
+
+GitHub Markdown CSS is MIT-licensed; its notice is installed with the other
+third-party notices and credited in About.
+
+## Separate viewer windows
+
+`o v` opens the selected file in an independent viewer window. The browser and
+viewer can navigate separately, and closing the browser or source tab leaves
+the viewer open. Multiple viewer windows can be opened. Each keeps its own
+selected file and document page; an already-rendered PDF/office document opens
+at the currently displayed page without converting it again.
+
+In a viewer, `q` (or Ctrl+Q) closes that window, `j`/`k` selects the next/previous
+file in the same directory, and `n`/`N` or Ctrl+PageDown/PageUp changes document
+pages. File navigation stops at the first and last file. Directory entries and
+special devices are skipped. Arrow keys and Page Up/Page Down keep their native
+text/HTML scrolling behavior. `u` loads the full preview; Escape cancels a pending
+preview. Ctrl+R refreshes the directory and current file.
+
+The viewer inherits Markdown styling, source line numbers, sorting, and hidden
+file visibility from the source panel. It has its own directory model and does
+not follow subsequent browser navigation. Files opened from inside an archive
+remain available until the viewer closes; extracted files are retained without
+keeping the entire source browser alive.

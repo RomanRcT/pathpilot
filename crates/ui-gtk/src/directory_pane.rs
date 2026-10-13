@@ -731,6 +731,17 @@ impl DirectoryPane {
             .min(self.selection.n_items().saturating_sub(1))
     }
 
+    pub fn visible_entries(&self) -> Vec<FileEntry> {
+        (0..self.selection.n_items())
+            .filter_map(|position| {
+                self.selection
+                    .item(position)
+                    .and_downcast::<glib::BoxedAnyObject>()
+                    .map(|object| object.borrow::<FileEntry>().clone())
+            })
+            .collect()
+    }
+
     pub fn names(&self) -> Vec<String> {
         (0..self.selection.n_items())
             .filter_map(|position| {
