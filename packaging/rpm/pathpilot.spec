@@ -18,6 +18,10 @@ BuildRequires:  pkgconfig(libadwaita-1) >= 1.5
 BuildRequires:  pkgconfig(gtk4) >= 4.12
 BuildRequires:  pkgconfig(vte-2.91-gtk4)
 BuildRequires:  rust
+Recommends:     poppler-utils
+Recommends:     libreoffice-writer
+Recommends:     libreoffice-calc
+Recommends:     libreoffice-impress
 Recommends:     neovim
 Recommends:     gvfs
 Recommends:     gvfs-smb

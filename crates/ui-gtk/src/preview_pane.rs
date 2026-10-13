@@ -7,6 +7,7 @@ use std::{
 
 use gtk::{gdk, gio, glib, prelude::*};
 use pathpilot_core::{FileEntry, FileKind, Generation, SortMode};
+use pathpilot_preview::document::{DocumentPreview, load_document_page};
 use pathpilot_preview::{
     MarkdownPreview, MarkdownStyle, PreviewCache, PreviewContent, PreviewGate, PreviewLimits,
     PreviewMode, PreviewResult, StyledTextPreview, load_preview,
@@ -27,6 +28,7 @@ struct PreviewState {
     cache: RefCell<PreviewCache>,
     has_rendered_content: Cell<bool>,
     loading: Cell<bool>,
+    document: RefCell<Option<DocumentPreview>>,
 }
 
 impl Default for PreviewState {
@@ -38,6 +40,7 @@ impl Default for PreviewState {
             cache: RefCell::new(PreviewCache::new(24)),
             has_rendered_content: Cell::new(false),
             loading: Cell::new(false),
+            document: RefCell::new(None),
         }
     }
 }
@@ -52,6 +55,7 @@ pub struct PreviewPane {
     metadata: gtk::Label,
     text: gtk::TextView,
     picture: gtk::Picture,
+    document_navigation: gtk::Label,
     spinner: gtk::Spinner,
     loading_label: gtk::Label,
     show_line_numbers: bool,
@@ -96,8 +100,10 @@ impl PreviewPane {
         let picture = gtk::Picture::builder()
             .can_shrink(true)
             .content_fit(gtk::ContentFit::Contain)
-            .halign(gtk::Align::Center)
-            .valign(gtk::Align::Center)
+            .halign(gtk::Align::Fill)
+            .valign(gtk::Align::Fill)
+            .hexpand(true)
+            .vexpand(true)
             .margin_start(12)
             .margin_end(12)
             .margin_top(12)
@@ -106,6 +112,9 @@ impl PreviewPane {
         let stack = gtk::Stack::builder()
             .hexpand(true)
             .vexpand(true)
+            // Hidden text/directory pages must not determine the document viewport.
+            .hhomogeneous(false)
+            .vhomogeneous(false)
             .transition_type(gtk::StackTransitionType::Crossfade)
             .transition_duration(100)
             .build();
@@ -155,6 +164,14 @@ impl PreviewPane {
         widget.append(&title);
         widget.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
         widget.append(&stack);
+        let document_navigation = gtk::Label::builder()
+            .wrap(true)
+            .margin_top(6)
+            .margin_bottom(6)
+            .visible(false)
+            .build();
+        document_navigation.add_css_class("dim-label");
+        widget.append(&document_navigation);
 
         Self {
             widget,
@@ -165,6 +182,7 @@ impl PreviewPane {
             metadata,
             text,
             picture,
+            document_navigation,
             spinner,
             loading_label,
             show_line_numbers,
@@ -291,6 +309,8 @@ impl PreviewPane {
     }
 
     pub fn cancel(&self) {
+        self.state.document.borrow_mut().take();
+        self.document_navigation.set_visible(false);
         self.state.gate.borrow_mut().begin();
         if let Some(source) = self.state.delay.borrow_mut().take() {
             source.remove();
@@ -328,7 +348,7 @@ impl PreviewPane {
             return;
         }
 
-        if mode == PreviewMode::Automatic
+        if (mode == PreviewMode::Automatic || pathpilot_preview::document::is_document(&entry))
             && let Some(content) = self.state.cache.borrow_mut().get(&entry)
         {
             self.render(
@@ -340,6 +360,13 @@ impl PreviewPane {
             );
             self.state.loading.set(false);
             self.spinner.stop();
+            self.title.set_label(match mode {
+                PreviewMode::Automatic => "Preview",
+                PreviewMode::Full => "Full preview",
+            });
+            if let Some(on_finished) = on_finished.as_ref() {
+                on_finished(true);
+            }
             return;
         }
 
@@ -353,7 +380,6 @@ impl PreviewPane {
             adw::StyleManager::default().is_dark(),
             mode,
             move |result| {
-                state.cancellable.borrow_mut().take();
                 if !state.gate.borrow().accepts(result.generation) {
                     debug!(
                         generation = result.generation.value(),
@@ -361,8 +387,10 @@ impl PreviewPane {
                     );
                     return;
                 }
+                state.cancellable.borrow_mut().take();
                 let success = result.content.is_ok();
-                if mode == PreviewMode::Automatic
+                if (mode == PreviewMode::Automatic
+                    || pathpilot_preview::document::is_document(&render_entry))
                     && let Ok(content) = &result.content
                 {
                     state
@@ -426,6 +454,9 @@ impl PreviewPane {
                 self.picture.set_paintable(Some(&texture));
                 self.stack.set_visible_child_name("image");
             }
+            Ok(PreviewContent::Document(preview)) => {
+                self.render_document(preview);
+            }
             Ok(PreviewContent::Unsupported) => {
                 self.metadata
                     .set_label(&basic_metadata(entry, "Preview is not supported"));
@@ -437,6 +468,57 @@ impl PreviewPane {
                 self.stack.set_visible_child_name("metadata");
             }
         }
+    }
+
+    fn render_document(&self, preview: DocumentPreview) {
+        self.picture
+            .set_paintable(Some(&gdk::Texture::for_pixbuf(&preview.pixbuf)));
+        self.document_navigation.set_label(&format!(
+            "Page {} / {} · n next · N previous",
+            preview.page_number, preview.session.page_count,
+        ));
+        self.document_navigation.set_visible(true);
+        *self.state.document.borrow_mut() = Some(preview);
+        self.stack.set_visible_child_name("image");
+    }
+
+    pub fn change_document_page(&self, forward: bool) -> bool {
+        let Some(document) = self.state.document.borrow().clone() else {
+            return false;
+        };
+        if self.state.loading.get() {
+            return true;
+        }
+        let page = if forward {
+            document.page_number.saturating_add(1)
+        } else {
+            document.page_number.saturating_sub(1)
+        };
+        if page == 0 || page > document.session.page_count {
+            return true;
+        }
+        if let Some(cancellable) = self.state.cancellable.borrow_mut().take() {
+            cancellable.cancel();
+        }
+        let generation = self.state.gate.borrow_mut().begin();
+        self.state.loading.set(true);
+        self.document_navigation
+            .set_label(&format!("Loading page {page}… · Escape cancels"));
+        let pane = self.clone();
+        let cancellable = load_document_page(document.session, page, generation, move |result| {
+            if !pane.state.gate.borrow().accepts(result.generation) {
+                return;
+            }
+            pane.state.cancellable.borrow_mut().take();
+            pane.state.loading.set(false);
+            match result.content {
+                Ok(PreviewContent::Document(document)) => pane.render_document(document),
+                Err(error) => pane.document_navigation.set_label(&error),
+                _ => {}
+            }
+        });
+        *self.state.cancellable.borrow_mut() = Some(cancellable);
+        true
     }
 
     fn render_styled_text(&self, entry: &FileEntry, preview: StyledTextPreview) {
@@ -691,6 +773,61 @@ fn basic_metadata(entry: &FileEntry, status: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[ignore = "requires a graphical session; run this test with --ignored --test-threads=1"]
+    fn document_viewport_ignores_hidden_content_and_fits_resized_panes() {
+        adw::init().unwrap();
+        let pane = PreviewPane::new(false, 0, Rc::new(RefCell::new(Default::default())));
+        pane.metadata
+            .set_text(&"very-long-unbroken-path".repeat(100));
+        pane.text.buffer().set_text(&"long source line".repeat(500));
+        pane.stack.set_visible_child_name("image");
+        pane.stack.set_transition_duration(0);
+        let window = gtk::Window::builder()
+            .default_width(900)
+            .default_height(600)
+            .build();
+        let split = gtk::Paned::new(gtk::Orientation::Horizontal);
+        split.set_start_child(Some(&gtk::Box::new(gtk::Orientation::Vertical, 0)));
+        split.set_end_child(Some(&pane.widget));
+        window.set_child(Some(&split));
+        window.present();
+        let context = glib::MainContext::default();
+        for (position, width, height) in [(200, 800, 1200), (600, 1200, 800), (400, 800, 1200)] {
+            let pixbuf = gtk::gdk_pixbuf::Pixbuf::new(
+                gtk::gdk_pixbuf::Colorspace::Rgb,
+                false,
+                8,
+                width,
+                height,
+            )
+            .unwrap();
+            pixbuf.fill(0xffffffff);
+            pane.picture
+                .set_paintable(Some(&gdk::Texture::for_pixbuf(&pixbuf)));
+            split.set_position(position);
+            let deadline = std::time::Instant::now() + Duration::from_millis(150);
+            while std::time::Instant::now() < deadline {
+                while context.pending() {
+                    context.iteration(false);
+                }
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            assert!(pane.stack.measure(gtk::Orientation::Horizontal, -1).0 < 200);
+            let viewport = pane.stack.compute_bounds(&window).unwrap();
+            let picture = pane.picture.compute_bounds(&window).unwrap();
+            assert!(picture.x() >= viewport.x());
+            assert!(picture.x() + picture.width() <= viewport.x() + viewport.width() + 1.0);
+            assert!(picture.y() >= viewport.y());
+            assert!(picture.y() + picture.height() <= viewport.y() + viewport.height() + 1.0);
+            assert!(
+                (picture.x() + picture.width() / 2.0 - viewport.x() - viewport.width() / 2.0).abs()
+                    < 1.0
+            );
+        }
+        window.close();
+    }
 
     #[test]
     fn line_numbers_preserve_line_boundaries_for_styled_offsets() {

@@ -1,5 +1,7 @@
 //! Bounded, cancelable preview loading without GTK widgets.
 
+pub mod document;
+
 use std::{
     collections::VecDeque,
     rc::Rc,
@@ -96,6 +98,7 @@ pub enum PreviewContent {
     StyledText(StyledTextPreview),
     Markdown(MarkdownPreview),
     Image(ImagePreview),
+    Document(document::DocumentPreview),
     Unsupported,
 }
 
@@ -142,6 +145,16 @@ impl PreviewCache {
         if self.capacity == 0 {
             return;
         }
+        if let PreviewContent::Document(document) = &content
+            && (entry.size.is_none()
+                || entry.modified.is_none()
+                || document.session.retained_bytes
+                    + document.pixbuf.byte_length() as u64
+                    + 16 * 1024 * 1024
+                    > 128 * 1024 * 1024)
+        {
+            return;
+        }
         let key = PreviewCacheKey::from(entry);
         if let Some(position) = self
             .entries
@@ -153,6 +166,29 @@ impl PreviewCache {
         self.entries.push_back((key, content));
         while self.entries.len() > self.capacity {
             self.entries.pop_front();
+        }
+        // Documents retain converted PDFs and a small page cache. Bound both
+        // their count and storage, independently of the lightweight text cache.
+        loop {
+            let mut count = 0;
+            let mut bytes = 0;
+            for (_, content) in &self.entries {
+                if let PreviewContent::Document(document) = content {
+                    count += 1;
+                    bytes += document.session.retained_bytes
+                        + document.pixbuf.byte_length() as u64
+                        + 16 * 1024 * 1024;
+                }
+            }
+            if count <= 4 && bytes <= 128 * 1024 * 1024 {
+                break;
+            }
+            let oldest = self
+                .entries
+                .iter()
+                .position(|(_, content)| matches!(content, PreviewContent::Document(_)))
+                .expect("document budget exceeded");
+            self.entries.remove(oldest);
         }
     }
 
@@ -211,9 +247,11 @@ pub fn load_preview(
                 truncated: false,
             })),
         });
+    } else if document::is_document(entry) {
+        document::load_document(entry, generation, limits, &cancellable, on_result);
     } else if content_type.starts_with("image/") {
         load_image(entry, generation, limits, &cancellable, on_result);
-    } else if is_text_content_type(content_type) {
+    } else {
         load_text(
             entry,
             generation,
@@ -223,13 +261,7 @@ pub fn load_preview(
             &cancellable,
             on_result,
         );
-    } else {
-        on_result(PreviewResult {
-            generation,
-            content: Ok(PreviewContent::Unsupported),
-        });
     }
-
     cancellable
 }
 
@@ -244,7 +276,9 @@ fn load_text(
 ) {
     let file = gio::File::for_uri(entry.location.uri());
     let display_name = entry.display_name.clone();
-    if mode == PreviewMode::Full {
+    let original_entry = entry.clone();
+    let sniff = !is_text_content_type(entry.content_type.as_deref().unwrap_or_default());
+    if mode == PreviewMode::Full && !sniff {
         let full_cancellable = cancellable.clone();
         file.load_contents_async(Some(cancellable), move |result| match result {
             Ok((bytes, _)) => {
@@ -290,6 +324,13 @@ fn load_text(
                     move |result| match result {
                         Ok(bytes) => {
                             let bytes = bytes.as_ref();
+                            if sniff && !looks_like_text(bytes, bytes.len() > byte_limit) {
+                                on_result(PreviewResult {
+                                    generation,
+                                    content: Ok(PreviewContent::Unsupported),
+                                });
+                                return;
+                            }
                             if bytes.contains(&0) {
                                 on_result(PreviewResult {
                                     generation,
@@ -297,8 +338,28 @@ fn load_text(
                                 });
                                 return;
                             }
+                            if sniff && mode == PreviewMode::Full {
+                                let mut text_entry = original_entry.clone();
+                                text_entry.content_type = Some("text/plain".to_owned());
+                                load_text(
+                                    &text_entry,
+                                    generation,
+                                    limits,
+                                    dark,
+                                    mode,
+                                    &highlight_cancellable,
+                                    on_result,
+                                );
+                                return;
+                            }
                             let truncated = bytes.len() > byte_limit;
                             let visible = &bytes[..bytes.len().min(byte_limit)];
+                            let visible = match std::str::from_utf8(visible) {
+                                Err(error) if truncated && error.error_len().is_none() => {
+                                    &visible[..error.valid_up_to()]
+                                }
+                                _ => visible,
+                            };
                             let rich = visible.len() <= limits.max_rich_text_bytes;
                             if !rich {
                                 on_result(PreviewResult {
@@ -668,6 +729,21 @@ fn char_len(value: &str) -> i32 {
     i32::try_from(value.chars().count()).unwrap_or(i32::MAX)
 }
 
+// Unknown MIME types must be valid UTF-8 without binary control bytes.
+// A bounded read may end halfway through the last UTF-8 character.
+fn looks_like_text(bytes: &[u8], may_be_truncated: bool) -> bool {
+    if bytes
+        .iter()
+        .any(|byte| matches!(byte, 0..=8 | 11 | 14..=31 | 127))
+    {
+        return false;
+    }
+    match std::str::from_utf8(bytes) {
+        Ok(_) => true,
+        Err(error) => may_be_truncated && error.error_len().is_none(),
+    }
+}
+
 fn is_text_content_type(content_type: &str) -> bool {
     content_type.starts_with("text/")
         || matches!(
@@ -689,9 +765,97 @@ mod tests {
     use super::*;
     use pathpilot_core::{FileKind, GenerationTracker, Location};
 
-    fn async_test_guard() -> std::sync::MutexGuard<'static, ()> {
+    pub(super) fn async_test_guard() -> std::sync::MutexGuard<'static, ()> {
         static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
         LOCK.get_or_init(|| Mutex::new(())).lock().unwrap()
+    }
+
+    #[test]
+    fn unknown_text_detection_rejects_binary_and_handles_utf8_boundaries() {
+        assert!(looks_like_text("Привет\nhello\t世界".as_bytes(), false));
+        assert!(!looks_like_text(b"header\0binary", false));
+        assert!(!looks_like_text(b"\x01\x02some binary without NUL", false));
+        assert!(!looks_like_text(b"\xff\xfe", false));
+        assert!(looks_like_text(b"text \xe2\x82", true));
+        assert!(!looks_like_text(b"text \xe2\x82", false));
+        assert!(!looks_like_text(b"text \xe2!", true));
+    }
+
+    #[test]
+    fn unknown_mime_files_are_sniffed_and_full_text_can_be_loaded() {
+        let _guard = async_test_guard();
+        let temporary = tempfile::tempdir().unwrap();
+        let path = temporary.path().join("unknown.data");
+        for (mime, source, mode, expected) in [
+            (
+                Some("application/octet-stream"),
+                "Привет\nhello".as_bytes(),
+                PreviewMode::Automatic,
+                true,
+            ),
+            (
+                Some("application/x-custom"),
+                b"header\tvalue\n".as_slice(),
+                PreviewMode::Automatic,
+                true,
+            ),
+            (None, b"no mime\n".as_slice(), PreviewMode::Full, true),
+            (
+                None,
+                b"\xff\x01binary".as_slice(),
+                PreviewMode::Automatic,
+                false,
+            ),
+            (
+                Some("application/octet-stream"),
+                b"head\0binary".as_slice(),
+                PreviewMode::Full,
+                false,
+            ),
+        ] {
+            fs::write(&path, source).unwrap();
+            let entry = FileEntry {
+                location: Location::new(gio::File::for_path(&path).uri()),
+                display_name: "unknown.data".to_owned(),
+                kind: FileKind::Regular,
+                size: Some(source.len() as u64),
+                modified: None,
+                unix_mode: None,
+                content_type: mime.map(str::to_owned),
+                is_hidden: false,
+                is_symlink: false,
+                archive_format: None,
+            };
+            let result = Rc::new(RefCell::new(None));
+            let main_loop = glib::MainLoop::new(None, false);
+            let _cancellable = load_preview(
+                &entry,
+                GenerationTracker::default().advance(),
+                PreviewLimits::default(),
+                false,
+                mode,
+                {
+                    let result = result.clone();
+                    let main_loop = main_loop.clone();
+                    move |preview| {
+                        *result.borrow_mut() = Some(preview.content);
+                        main_loop.quit();
+                    }
+                },
+            );
+            main_loop.run();
+            let content = result.borrow_mut().take().unwrap().unwrap();
+            if expected {
+                let text = match content {
+                    PreviewContent::Text(text) => text.text,
+                    PreviewContent::StyledText(text) => text.text,
+                    _ => panic!("expected text for {mime:?}"),
+                };
+                assert_eq!(text.as_bytes(), source);
+            } else {
+                assert!(matches!(content, PreviewContent::Unsupported));
+            }
+        }
     }
 
     #[test]

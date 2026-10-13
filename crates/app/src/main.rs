@@ -13,6 +13,20 @@ fn main() -> gtk::glib::ExitCode {
         .application_id(APP_ID)
         .flags(gio::ApplicationFlags::empty())
         .build();
+    app.add_main_option(
+        "new-instance",
+        gtk::glib::Char::from(0),
+        gtk::glib::OptionFlags::NONE,
+        gtk::glib::OptionArg::None,
+        "Run a separate instance instead of activating an already running version",
+        None,
+    );
+    app.connect_handle_local_options(|app, options| {
+        if options.contains("new-instance") {
+            app.set_flags(gio::ApplicationFlags::NON_UNIQUE);
+        }
+        std::ops::ControlFlow::Continue(())
+    });
     app.connect_activate(|app| {
         let started = std::time::Instant::now();
         let window = pathpilot_ui_gtk::build_window(app);

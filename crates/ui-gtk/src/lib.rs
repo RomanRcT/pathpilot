@@ -2560,6 +2560,28 @@ fn trash_is_available(location: &Location) -> bool {
     gio::File::for_uri(location.uri()).is_native()
 }
 
+fn install_about_action(app: &adw::Application) {
+    if app.lookup_action("about").is_none() {
+        let about = gio::SimpleAction::new("about", None);
+        let weak_app = app.downgrade();
+        about.connect_activate(move |_, _| {
+            let Some(window) = weak_app.upgrade().and_then(|app| app.active_window()) else {
+                return;
+            };
+            let dialog = adw::AboutDialog::builder()
+                .application_name("PathPilot")
+                .application_icon("io.github.RomanRcT.PathPilot")
+                .version(env!("CARGO_PKG_VERSION"))
+                .comments("Keyboard-first local file manager")
+                .website("https://github.com/RomanRcT/pathpilot")
+                .license_type(gtk::License::Gpl30)
+                .build();
+            dialog.present(Some(&window));
+        });
+        app.add_action(&about);
+    }
+}
+
 pub fn build_window(app: &adw::Application) -> adw::ApplicationWindow {
     let startup_span = info_span!("build_window");
     let _guard = startup_span.enter();
@@ -2648,24 +2670,7 @@ pub fn build_window(app: &adw::Application) -> adw::ApplicationWindow {
     header.pack_end(&menu_button);
     header.set_title_widget(Some(&browser.location_label));
 
-    if app.lookup_action("about").is_none() {
-        let about = gio::SimpleAction::new("about", None);
-        let weak_window = window.downgrade();
-        about.connect_activate(move |_, _| {
-            let dialog = adw::AboutDialog::builder()
-                .application_name("PathPilot")
-                .application_icon("io.github.RomanRcT.PathPilot")
-                .version(env!("CARGO_PKG_VERSION"))
-                .comments("Keyboard-first local file manager")
-                .website("https://github.com/RomanRcT/pathpilot")
-                .license_type(gtk::License::Gpl30)
-                .build();
-            if let Some(window) = weak_window.upgrade() {
-                dialog.present(Some(&window));
-            }
-        });
-        app.add_action(&about);
-    }
+    install_about_action(app);
 
     let columns = three_column_layout(&browser);
     let content = gtk::Paned::new(gtk::Orientation::Vertical);
@@ -2830,6 +2835,27 @@ fn default_places(bookmarks: &[pathpilot_config::Bookmark]) -> Vec<PlaceBinding>
     places
 }
 
+fn document_page_direction(key: gdk::Key, modifiers: gdk::ModifierType) -> Option<bool> {
+    let modifiers = modifiers
+        & (gdk::ModifierType::SHIFT_MASK
+            | gdk::ModifierType::CONTROL_MASK
+            | gdk::ModifierType::ALT_MASK
+            | gdk::ModifierType::SUPER_MASK
+            | gdk::ModifierType::META_MASK);
+    match (key, modifiers) {
+        (gdk::Key::Page_Up, gdk::ModifierType::CONTROL_MASK) => Some(false),
+        (gdk::Key::Page_Down, gdk::ModifierType::CONTROL_MASK) => Some(true),
+        (gdk::Key::n | gdk::Key::bracketright, modifiers) if modifiers.is_empty() => Some(true),
+        (gdk::Key::N, modifiers)
+            if modifiers.is_empty() || modifiers == gdk::ModifierType::SHIFT_MASK =>
+        {
+            Some(false)
+        }
+        (gdk::Key::bracketleft, modifiers) if modifiers.is_empty() => Some(false),
+        _ => None,
+    }
+}
+
 fn install_keyboard_controller(
     window: &adw::ApplicationWindow,
     browser: Weak<Browser>,
@@ -2969,6 +2995,15 @@ fn install_keyboard_controller(
             .is_some_and(|browser| browser.editing.get())
         {
             return glib::Propagation::Proceed;
+        }
+        let document_page_forward = document_page_direction(key, modifiers);
+        if let Some(forward) = document_page_forward
+            && let Some(browser) = browser.upgrade()
+            && *browser.mode.borrow() == AppMode::Normal
+            && browser.preview.change_document_page(forward)
+        {
+            parser.borrow_mut().reset();
+            return glib::Propagation::Stop;
         }
         if let Some(browser) = browser.upgrade()
             && *browser.mode.borrow() == AppMode::Command
@@ -3724,6 +3759,61 @@ fn install_hint_css() {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn document_page_keys_use_n_and_shift_n_without_taking_control_shortcuts() {
+        assert_eq!(
+            super::document_page_direction(gdk::Key::n, gdk::ModifierType::empty()),
+            Some(true)
+        );
+        assert_eq!(
+            super::document_page_direction(gdk::Key::N, gdk::ModifierType::SHIFT_MASK),
+            Some(false)
+        );
+        assert_eq!(
+            super::document_page_direction(gdk::Key::n, gdk::ModifierType::CONTROL_MASK),
+            None
+        );
+        assert_eq!(
+            super::document_page_direction(gdk::Key::n, gdk::ModifierType::ALT_MASK),
+            None
+        );
+        assert_eq!(
+            super::document_page_direction(gdk::Key::Page_Down, gdk::ModifierType::CONTROL_MASK),
+            Some(true)
+        );
+    }
+
+    #[test]
+    #[ignore = "requires a graphical session; run this test with --ignored --test-threads=1"]
+    fn about_uses_the_active_window_after_the_first_window_is_closed() {
+        use adw::prelude::*;
+        adw::init().unwrap();
+        let app = adw::Application::builder()
+            .application_id("io.github.RomanRcT.PathPilot.AboutTest")
+            .flags(gio::ApplicationFlags::NON_UNIQUE)
+            .build();
+        app.register(None::<&gio::Cancellable>).unwrap();
+        super::install_about_action(&app);
+        let first = adw::ApplicationWindow::builder().application(&app).build();
+        let second = adw::ApplicationWindow::builder().application(&app).build();
+        first.present();
+        first.close();
+        drop(first);
+        second.present();
+        let context = glib::MainContext::default();
+        let started = std::time::Instant::now();
+        while app.active_window().as_ref() != Some(second.upcast_ref()) {
+            while context.pending() {
+                context.iteration(false);
+            }
+            assert!(started.elapsed() < std::time::Duration::from_secs(3));
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        app.activate_action("about", None);
+        assert!(second.visible_dialog().is_some());
+        second.close();
+    }
+
     use super::*;
 
     #[test]

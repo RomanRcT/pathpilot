@@ -25,10 +25,15 @@ PathPilot requires GTK 4.12 or newer, libadwaita 1.5 or newer, and GTK4 VTE.
 - Single-click selection and double-click directory/file opening.
 - Preview requests use a configurable 75 ms debounce, are cancelable, and generation-checked.
 - Bounded text previews and asynchronously decoded, viewport-scaled image previews.
-- Empty files have an explicit empty state; YAML MIME variants are treated as text.
+- Empty files have an explicit empty state; unknown MIME types are checked for UTF-8 text without binary control bytes.
+- PDF and office previews preserve page layout, including tables, and load one page at a time.
+  Supported office formats: DOC/DOCX, ODT, RTF, XLS/XLSX, ODS, PPT/PPTX, and ODP.
 - Source previews are syntax-highlighted off the GTK thread with `syntect`.
 - Markdown headings, emphasis, lists, tables, links, and code are rendered without executing HTML or loading remote content.
 - A 24-entry LRU preview cache is invalidated by URI, size, and modification time.
+  Up to four documents are retained within a 128 MiB budget, so revisiting them
+  does not repeat office conversion. Each document also caches up to four rendered
+  pages (16 MiB). An isolated LibreOffice profile is reused across conversions.
 - Mode-colored status line with compact metadata and separate Git repository status.
 - Structured startup, model creation, and selection tracing.
 - GTK-independent commands and key-sequence parsing.
@@ -81,6 +86,8 @@ directory and `h` to return to its parent.
 | `s n/e/z/m` / `s r` | Sort by name/extension/size/modified time / reverse |
 | `z` | Cycle pane layout |
 | `u` / `Escape` | Load full syntax preview / cancel loading |
+| `n` / `N` | Next / previous page when previewing a document; otherwise repeat filename find |
+| `[` / `]` or `Ctrl+PgUp` / `Ctrl+PgDn` | Previous / next document page (alternative bindings) |
 | `e` | Edit a local text file in embedded Neovim |
 | `b` | Bookmark the current directory and choose its `g` key |
 | `g l` / `g w` | Connect to a Linux/SFTP or Windows/SMB host |
@@ -92,7 +99,12 @@ directory and `h` to return to its parent.
 
 - Remote image previews, archives, Git integration, terminal, and embedded editing are local-only.
 - No tabs, and filtering is limited to names in the current directory.
-- No PDF, archive, office document, audio, or video previews.
+- Document previews require Poppler tools; office documents also require LibreOffice.
+  Files are limited to 64 MiB, conversion/rendering has a 60-second timeout per step,
+  and password-protected documents are not supported. Office tables use the document's
+  printable page layout; cells are not editable in preview.
+- No archive, audio, or video previews.
+- Unknown text detection supports UTF-8; other encodings may still be treated as binary.
 - Remote browsing requires the matching GVfs backend to be installed on the host.
 - Embedded editing requires `nvim` and currently accepts local text files only.
 - Fedora and Wayland are the primary development targets; other Linux environments are not yet validated.
@@ -125,7 +137,9 @@ flatpak run io.github.RomanRcT.PathPilot
 
 The Flatpak has host-filesystem access because PathPilot is a file manager. Its
 embedded editor uses `flatpak-spawn --host nvim`, so Neovim and the user's
-normal configuration remain on the host. The manifest therefore also grants
+normal configuration remain on the host. PDF and office previews also use host
+Poppler/LibreOffice through `flatpak-spawn --host`; temporary copies are kept
+in a bounded preview cache and removed when evicted or when PathPilot exits. The manifest therefore also grants
 access to the Flatpak portal service.
 
 ## Fedora development setup
@@ -133,13 +147,27 @@ access to the Flatpak portal service.
 Install the native dependencies:
 
 ```bash
-sudo dnf install rust cargo gtk4-devel libadwaita-devel vte291-gtk4-devel gcc pkgconf-pkg-config neovim 7zip gvfs gvfs-smb
+sudo dnf install rust cargo rustfmt clippy gtk4-devel libadwaita-devel vte291-gtk4-devel gcc pkgconf-pkg-config neovim 7zip gvfs gvfs-smb
+```
+
+Optional document preview dependencies:
+
+```bash
+sudo dnf install poppler-utils libreoffice-writer libreoffice-calc libreoffice-impress
 ```
 
 Build and run:
 
 ```bash
 cargo run -p pathpilot
+```
+
+Normally a second launch opens a window in the already running process. When
+checking a rebuilt binary while an installed version is open, use:
+
+```bash
+cargo build --release
+./target/release/pathpilot --new-instance
 ```
 
 Enable detailed logs with:
@@ -154,6 +182,8 @@ Run project checks:
 cargo fmt --all --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
+# With Poppler and LibreOffice installed, also run document integration tests:
+cargo test -p pathpilot-preview -- --ignored
 ```
 
 GTK 4 applications require a graphical session. PathPilot targets Wayland first but can also use another GDK backend supported by the local GTK installation.

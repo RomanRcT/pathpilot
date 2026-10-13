@@ -19,8 +19,8 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v4
 
-      - name: Install GTK development packages
-        run: sudo apt-get update && sudo apt-get install --yes libgtk-4-dev libadwaita-1-dev libvte-2.91-gtk4-dev pkg-config
+      - name: Install native and document preview dependencies
+        run: sudo apt-get update && sudo apt-get install --yes libgtk-4-dev libadwaita-1-dev libvte-2.91-gtk4-dev pkg-config poppler-utils libreoffice-writer libreoffice-calc libreoffice-impress
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -38,3 +38,6 @@ jobs:
 
       - name: Run tests
         run: cargo test --workspace
+
+      - name: Test PDF and office document previews
+        run: cargo test -p pathpilot-preview -- --ignored
