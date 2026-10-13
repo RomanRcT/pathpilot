@@ -2576,6 +2576,14 @@ fn install_about_action(app: &adw::Application) {
                 .website("https://github.com/RomanRcT/pathpilot")
                 .license_type(gtk::License::Gpl30)
                 .build();
+            dialog.add_acknowledgement_section(Some("Document preview engines"), &[
+                "ArtCraft Team and the WordCraft contributors https://github.com/storytold/wordcraft",
+                "ArtCraft Team and the GridCraft contributors https://github.com/storytold/gridcraft",
+            ]);
+            dialog.add_link("WordCraft — DOCX previews", "https://github.com/storytold/wordcraft");
+            dialog.add_link("GridCraft — spreadsheet previews", "https://github.com/storytold/gridcraft");
+            dialog.add_legal_section("WordCraft", None, gtk::License::Custom, Some(include_str!("../../../data/licenses/wordcraft/LICENSE-MIT")));
+            dialog.add_legal_section("GridCraft", None, gtk::License::Custom, Some(include_str!("../../../data/licenses/gridcraft/LICENSE-MIT")));
             dialog.present(Some(&window));
         });
         app.add_action(&about);

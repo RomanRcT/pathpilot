@@ -209,12 +209,11 @@ sudo dnf install cargo rust rpm-build make gcc pkgconf-pkg-config \
 Build and validate the package from the repository root:
 
 ```bash
-rm -rf "$HOME/rpmbuild/BUILD" "$HOME/rpmbuild/BUILDROOT"
 mkdir -p "$HOME/rpmbuild/SOURCES"
 version=$(sed -n 's/^Version:[[:space:]]*//p' packaging/rpm/pathpilot.spec)
-tar --exclude=.git --exclude=target \
-  --transform="s,^,pathpilot-${version}/," \
-  -czf "$HOME/rpmbuild/SOURCES/pathpilot-${version}.tar.gz" .
+python3 tools/create-offline-source.py --output release-assets
+cp "release-assets/pathpilot-${version}-offline-source.tar.gz" \
+  "$HOME/rpmbuild/SOURCES/pathpilot-${version}.tar.gz"
 rpmbuild -ba packaging/rpm/pathpilot.spec
 ```
 
@@ -250,7 +249,13 @@ sort_descending = false
 PathPilot is free software distributed under the [GNU General Public License v3.0 or later](LICENSE).
 
 Document engines are pinned to specific WordCraft/GridCraft revisions in
-`Cargo.toml`. Their license notices and bundled font licenses are installed from
+`Cargo.toml`. Reviewed updates are proposed through Renovate; automatic merging
+is disabled. Future releases include a verified offline source archive with all
+locked Rust dependencies and compile-time assets. See
+[dependency maintenance](docs/dependency-maintenance.md) for setup, updates and
+independent builds.
+
+Their authors are credited in About. Their license notices and bundled font licenses are installed from
 `data/licenses/`. For offline/Flatpak builds, run
 `python3 tools/vendor-dependencies.py`; it vendors Git dependencies and copies
 WordCraft's compile-time assets as well as registry crates.

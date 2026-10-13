@@ -1,0 +1,31 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": ["config:recommended"],
+  "enabledManagers": ["cargo"],
+  "timezone": "America/Chicago",
+  "schedule": ["before 6am on monday"],
+  "automerge": false,
+  "dependencyDashboard": false,
+  "prConcurrentLimit": 2,
+  "prHourlyLimit": 2,
+  "packageRules": [
+    {"matchPackageNames": ["*"], "enabled": false},
+    {
+      "matchPackageNames": ["https://github.com/storytold/wordcraft"],
+      "enabled": true,
+      "groupName": "WordCraft engine",
+      "groupSlug": "wordcraft-engine"
+    },
+    {
+      "matchPackageNames": ["https://github.com/storytold/gridcraft"],
+      "enabled": true,
+      "groupName": "GridCraft engine",
+      "groupSlug": "gridcraft-engine"
+    }
+  ],
+  "prBodyNotes": [
+    "All modules from each Craft repository must remain pinned to the same full commit SHA.",
+    "Before merging: review upstream changes and licenses, run document preview tests, inspect rendered pages, and require the offline source archive check to pass.",
+    "If the license snapshot check fails, review the upstream notices, then run `python3 tools/document-licenses.py --update` and commit the reviewed notice changes."
+  ]
+}

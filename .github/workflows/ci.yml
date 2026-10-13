@@ -30,6 +30,12 @@ jobs:
       - name: Cache Cargo build data
         uses: Swatinem/rust-cache@v2
 
+      - name: Check engine pins and license notices
+        run: python3 tools/document-licenses.py
+
+      - name: Test source archive tooling
+        run: python3 -m unittest discover -s tools -p 'test_*.py'
+
       - name: Check formatting
         run: cargo fmt --all --check
 
@@ -41,3 +47,13 @@ jobs:
 
       - name: Test PDF and office document previews
         run: cargo test -p pathpilot-preview -- --ignored
+
+  renovate:
+    name: Validate dependency update configuration
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - run: npx --yes --package=renovate@44.155.4 renovate-config-validator --strict renovate.json

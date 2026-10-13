@@ -36,7 +36,7 @@ desktop application integration, and embedded Neovim editing.
 %autosetup
 
 %build
-cargo build --release --locked
+cargo build --release --locked --offline
 
 %install
 %make_install

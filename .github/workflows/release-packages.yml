@@ -8,6 +8,11 @@ on:
       - '.github/workflows/release-packages.yml'
       - 'packaging/**'
       - 'Makefile'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'tools/**'
+      - 'data/licenses/**'
+      - 'renovate.json'
       - 'data/io.github.RomanRcT.PathPilot.desktop'
       - 'data/io.github.RomanRcT.PathPilot.metainfo.xml'
       - 'data/icons/**'
@@ -28,11 +33,16 @@ jobs:
   validate:
     name: Validate release metadata
     runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.metadata.outputs.version }}
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
 
       - name: Compare tag and package versions
+        id: metadata
         shell: bash
         run: |
           set -euo pipefail
@@ -40,15 +50,52 @@ jobs:
           cargo_version="$(sed -n '/^\[workspace.package\]/,/^\[/s/^version = "\([^"]*\)"/\1/p' Cargo.toml)"
           rpm_version="$(sed -n 's/^Version:[[:space:]]*//p' packaging/rpm/pathpilot.spec)"
           appstream_version="$(sed -n 's/.*<release version="\([^"]*\)".*/\1/p' data/io.github.RomanRcT.PathPilot.metainfo.xml | head -n 1)"
+          if [ "${{ github.event_name }}" = pull_request ]; then expected="$cargo_version"; fi
+          echo "version=$cargo_version" >> "$GITHUB_OUTPUT"
           test "$expected" = "$cargo_version"
           test "$expected" = "$rpm_version"
           test "$expected" = "$appstream_version"
 
-  rpm:
-    name: Fedora RPM
+  source:
+    name: Build and verify offline source
     needs: validate
     runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      RELEASE_TAG: v${{ needs.validate.outputs.version }}
+    steps:
+      - name: Check out release source
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
+
+      - name: Install native build dependencies
+        run: sudo apt-get update && sudo apt-get install --yes libgtk-4-dev libadwaita-1-dev libvte-2.91-gtk4-dev pkg-config
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Create source archive with locked dependencies and notices
+        run: python3 tools/create-offline-source.py --output release-assets
+
+      - name: Build offline with an empty Cargo cache
+        run: python3 tools/verify-offline-source.py release-assets/pathpilot-${RELEASE_TAG#v}-offline-source.tar.gz --release
+
+      - name: Upload offline source archive and checksum
+        uses: actions/upload-artifact@v4
+        with:
+          name: offline-source
+          path: release-assets/*
+          if-no-files-found: error
+          retention-days: 90
+
+  rpm:
+    name: Fedora RPM
+    needs: [validate, source]
+    runs-on: ubuntu-24.04
     container: fedora:44
+    env:
+      RELEASE_TAG: v${{ needs.validate.outputs.version }}
     steps:
       - name: Install build dependencies
         run: >-
@@ -59,6 +106,18 @@ jobs:
 
       - name: Check out repository
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
+
+      - name: Download verified source
+        uses: actions/download-artifact@v4
+        with:
+          name: offline-source
+          path: source-archive
+
+      - name: Verify source checksum
+        working-directory: source-archive
+        run: sha256sum --check *.sha256
 
       - name: Build RPM packages
         shell: bash
@@ -66,9 +125,7 @@ jobs:
           set -euo pipefail
           version="${RELEASE_TAG#v}"
           mkdir -p "$HOME/rpmbuild/SOURCES" release-assets
-          tar --exclude=.git --exclude=target \
-            --transform="s,^,pathpilot-${version}/," \
-            -czf "$HOME/rpmbuild/SOURCES/pathpilot-${version}.tar.gz" .
+          cp "source-archive/pathpilot-${version}-offline-source.tar.gz" "$HOME/rpmbuild/SOURCES/pathpilot-${version}.tar.gz"
           rpmbuild -ba packaging/rpm/pathpilot.spec
           cp "$HOME"/rpmbuild/RPMS/x86_64/pathpilot-${version}-*.x86_64.rpm release-assets/
           cp "$HOME"/rpmbuild/SRPMS/pathpilot-${version}-*.src.rpm release-assets/
@@ -82,8 +139,10 @@ jobs:
 
   flatpak:
     name: Flatpak bundle
-    needs: validate
+    needs: [validate, source]
     runs-on: ubuntu-24.04
+    env:
+      RELEASE_TAG: v${{ needs.validate.outputs.version }}
     steps:
       - name: Install Flatpak tooling
         run: sudo apt-get update && sudo apt-get install --yes flatpak flatpak-builder
@@ -97,15 +156,28 @@ jobs:
 
       - name: Check out repository
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
 
-      - name: Vendor Rust dependencies
-        run: python3 tools/vendor-dependencies.py
+      - name: Download verified source
+        uses: actions/download-artifact@v4
+        with:
+          name: offline-source
+          path: source-archive
+
+      - name: Unpack verified source
+        run: |
+          cd source-archive
+          sha256sum --check *.sha256
+          mkdir ../offline-source
+          tar -xzf pathpilot-${RELEASE_TAG#v}-offline-source.tar.gz -C ../offline-source
 
       - name: Build Flatpak bundle
         shell: bash
         run: |
           set -euo pipefail
           version="${RELEASE_TAG#v}"
+          cd "offline-source/pathpilot-${version}"
           flatpak-builder --user --force-clean --repo=flatpak-repo \
             build-flatpak packaging/flatpak/io.github.RomanRcT.PathPilot.yml
           flatpak build-bundle flatpak-repo \
@@ -117,13 +189,13 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: flatpak-bundle
-          path: PathPilot-*.flatpak
+          path: offline-source/pathpilot-*/PathPilot-*.flatpak
           if-no-files-found: error
 
   publish:
     name: Attach packages to release
     if: github.event_name != 'pull_request'
-    needs: [rpm, flatpak]
+    needs: [rpm, flatpak, source]
     runs-on: ubuntu-24.04
     steps:
       - name: Download packages

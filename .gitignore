@@ -6,3 +6,6 @@
 /vendor
 
 /assets
+
+__pycache__/
+/release-assets
