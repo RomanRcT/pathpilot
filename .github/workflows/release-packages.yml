@@ -126,7 +126,9 @@ jobs:
           version="${RELEASE_TAG#v}"
           mkdir -p "$HOME/rpmbuild/SOURCES" release-assets
           cp "source-archive/pathpilot-${version}-offline-source.tar.gz" "$HOME/rpmbuild/SOURCES/pathpilot-${version}.tar.gz"
-          rpmbuild -ba packaging/rpm/pathpilot.spec
+          # Also applies to existing tags whose spec predates this packaging fix.
+          rpmbuild --define '__brp_mangle_shebangs_exclude_from /usr/src/debug/.*[.]rs$' \
+            -ba packaging/rpm/pathpilot.spec
           cp "$HOME"/rpmbuild/RPMS/x86_64/pathpilot-${version}-*.x86_64.rpm release-assets/
           cp "$HOME"/rpmbuild/SRPMS/pathpilot-${version}-*.src.rpm release-assets/
 

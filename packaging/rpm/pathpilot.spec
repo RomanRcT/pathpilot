@@ -1,3 +1,7 @@
+# Vendored Rust sources can carry executable bits, but #![...] is not a shebang.
+# Keep debug sources intact and skip interpreter rewriting for Rust source only.
+%global __brp_mangle_shebangs_exclude_from /usr/src/debug/.*[.]rs$
+
 Name:           pathpilot
 Version:        0.4.0
 Release:        1%{?dist}
