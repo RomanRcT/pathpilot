@@ -200,6 +200,7 @@ Preview line numbers and the application color scheme can be configured under
 preview_delay_ms = 75    # wait before loading the selected item's preview
 query_commit_delay_ms = 800  # apply a find or filter query once typing stops;
                              # 0 disables it, so only Enter and Escape apply it
+keyboard_confirmations = true # y confirms; n or Escape cancels; false restores dialogs
 preview_line_numbers = true
 color_scheme = "system" # system, light, or dark
 sort_key = "name"       # name, extension, size, or modified

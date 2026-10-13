@@ -67,7 +67,10 @@ impl ClipboardText {
     }
 }
 
+type ConfirmationAction = Box<dyn Fn(&Rc<Browser>)>;
+
 struct Browser {
+    confirmation: RefCell<Option<ConfirmationAction>>,
     navigation: RefCell<NavigationState>,
     parent: DirectoryPane,
     current: DirectoryPane,
@@ -285,6 +288,7 @@ impl Browser {
             current.remote_cache(),
         );
         Rc::new(Self {
+            confirmation: RefCell::new(None),
             navigation: RefCell::new(NavigationState::new(initial)),
             parent: DirectoryPane::new("Parent"),
             current,
@@ -988,22 +992,13 @@ impl Browser {
         parent: gio::File,
         conflicts: usize,
     ) {
-        let dialog = gtk::MessageDialog::builder()
-            .transient_for(window)
-            .modal(true)
-            .message_type(gtk::MessageType::Question)
-            .buttons(gtk::ButtonsType::None)
-            .text(format!("{conflicts} destination conflict(s)"))
-            .secondary_text("Keep all items using unique names where needed?")
-            .build();
-        dialog.add_button("Cancel", gtk::ResponseType::Cancel);
-        dialog.add_button("Keep Both", gtk::ResponseType::Accept);
-        dialog.set_default_response(gtk::ResponseType::Accept);
-        let weak = Rc::downgrade(self);
-        dialog.connect_response(move |dialog, response| {
-            if response == gtk::ResponseType::Accept
-                && let Some(browser) = weak.upgrade()
-            {
+        self.ask_confirmation(
+            window,
+            format!("{conflicts} destination conflict(s)"),
+            "Keep all items using unique names where needed?".to_owned(),
+            "Keep Both",
+            gtk::MessageType::Question,
+            move |browser| {
                 let transfers = clipboard
                     .items
                     .iter()
@@ -1021,10 +1016,8 @@ impl Browser {
                     })
                     .collect();
                 browser.start_paste(clipboard.clone(), transfers);
-            }
-            dialog.close();
-        });
-        dialog.present();
+            },
+        );
     }
 
     fn start_paste(self: &Rc<Self>, clipboard: OperationClipboard, transfers: Vec<TransferSpec>) {
@@ -1514,6 +1507,76 @@ impl Browser {
         );
     }
 
+    #[allow(deprecated)]
+    fn ask_confirmation(
+        self: &Rc<Self>,
+        window: &adw::ApplicationWindow,
+        question: String,
+        detail: String,
+        accept_label: &str,
+        message_type: gtk::MessageType,
+        action: impl Fn(&Rc<Self>) + 'static,
+    ) {
+        if self.settings.borrow().ui.keyboard_confirmations {
+            *self.confirmation.borrow_mut() = Some(Box::new(action));
+            self.input_entry.set_text("");
+            self.input_entry.set_placeholder_text(Some("y / n"));
+            self.input_title.set_label(&question);
+            self.input_title.set_wrap(true);
+            self.input_title.set_width_chars(32);
+            self.input_help.set_label(&format!("{detail}\ny yes · n / Esc cancel"));
+            self.input_help.set_wrap(true);
+            self.input_help.set_max_width_chars(60);
+            self.input_bar.set_tooltip_text(Some(&detail));
+            self.input_bar.set_visible(true);
+            self.input_entry.grab_focus();
+            self.status.set_label(&format!("INPUT  {question} {} · y / n", detail.replace('\n', " ")));
+            return;
+        }
+        let dialog = gtk::MessageDialog::builder()
+            .transient_for(window)
+            .modal(true)
+            .message_type(message_type)
+            .buttons(gtk::ButtonsType::None)
+            .text(question)
+            .secondary_text(detail)
+            .build();
+        dialog.add_button("Cancel", gtk::ResponseType::Cancel);
+        dialog.add_button(accept_label, gtk::ResponseType::Accept);
+        let weak = Rc::downgrade(self);
+        dialog.connect_response(move |dialog, response| {
+            if response == gtk::ResponseType::Accept
+                && let Some(browser) = weak.upgrade()
+            {
+                action(&browser);
+            }
+            dialog.close();
+        });
+        dialog.present();
+    }
+
+    fn confirmation_pending(&self) -> bool {
+        self.confirmation.borrow().is_some()
+    }
+
+    fn answer_confirmation(self: &Rc<Self>, accepted: bool) {
+        let action = self.confirmation.borrow_mut().take();
+        self.input_entry.set_placeholder_text(Some("Type a name…"));
+        self.input_bar.set_tooltip_text(None);
+        self.input_title.set_wrap(false);
+        self.input_title.set_width_chars(16);
+        self.input_help.set_wrap(false);
+        self.input_help.set_max_width_chars(-1);
+        self.hide_input_bar();
+        if accepted {
+            if let Some(action) = action {
+                action(self);
+            }
+        } else {
+            self.status.set_label("NORMAL  Operation cancelled");
+        }
+    }
+
     fn show_input_bar(&self) {
         self.refresh_input_bar();
         self.input_bar.set_visible(true);
@@ -1652,19 +1715,13 @@ impl Browser {
             return;
         }
         let targets: Vec<_> = entries.iter().map(|entry| entry.location.clone()).collect();
-        let dialog = gtk::MessageDialog::builder()
-            .transient_for(window)
-            .modal(true)
-            .message_type(gtk::MessageType::Warning)
-            .buttons(gtk::ButtonsType::OkCancel)
-            .text(format!("Move {} item(s) to Trash?", entries.len()))
-            .secondary_text(selection_summary(&entries))
-            .build();
-        let weak = Rc::downgrade(self);
-        dialog.connect_response(move |dialog, response| {
-            if response == gtk::ResponseType::Ok
-                && let Some(browser) = weak.upgrade()
-            {
+        self.ask_confirmation(
+            window,
+            format!("Move {} item(s) to Trash?", entries.len()),
+            selection_summary(&entries),
+            "Move to Trash",
+            gtk::MessageType::Warning,
+            move |browser| {
                 browser.leave_visual();
                 browser.show_operation_shelf("Moving to Trash", entries.len());
                 let weak_progress = Rc::downgrade(&browser);
@@ -1684,10 +1741,8 @@ impl Browser {
                     },
                 );
                 *browser.active_operation.borrow_mut() = Some(handle);
-            }
-            dialog.close();
-        });
-        dialog.present();
+            },
+        );
     }
 
     #[allow(deprecated)]
@@ -1702,24 +1757,13 @@ impl Browser {
             return;
         }
         let targets: Vec<_> = entries.iter().map(|entry| entry.location.clone()).collect();
-        let dialog = gtk::MessageDialog::builder()
-            .transient_for(window)
-            .modal(true)
-            .message_type(gtk::MessageType::Error)
-            .buttons(gtk::ButtonsType::None)
-            .text(format!("Delete {} item(s) permanently?", entries.len()))
-            .secondary_text(format!(
-                "{}\n\nThis cannot be undone. Directories and all their contents will be removed.",
-                selection_summary(&entries)
-            ))
-            .build();
-        dialog.add_button("Cancel", gtk::ResponseType::Cancel);
-        dialog.add_button("Delete Permanently", gtk::ResponseType::Accept);
-        let weak = Rc::downgrade(self);
-        dialog.connect_response(move |dialog, response| {
-            if response == gtk::ResponseType::Accept
-                && let Some(browser) = weak.upgrade()
-            {
+        self.ask_confirmation(
+            window,
+            format!("Delete {} item(s) permanently?", entries.len()),
+            format!("{}\n\nThis cannot be undone. Directories and all their contents will be removed.", selection_summary(&entries)),
+            "Delete Permanently",
+            gtk::MessageType::Error,
+            move |browser| {
                 browser.leave_visual();
                 browser.show_operation_shelf("Deleting permanently", entries.len());
                 let weak_progress = Rc::downgrade(&browser);
@@ -1739,10 +1783,8 @@ impl Browser {
                     },
                 );
                 *browser.active_operation.borrow_mut() = Some(handle);
-            }
-            dialog.close();
-        });
-        dialog.present();
+            },
+        );
     }
 
     fn operation_finished(self: &Rc<Self>, result: OperationResult) {
@@ -2894,6 +2936,21 @@ fn install_keyboard_controller(
     let open_with_pending = Rc::new(RefCell::new(None::<(Option<FileEntry>, Vec<gio::AppInfo>)>));
     let open_with_pending_for_keys = open_with_pending.clone();
     controller.connect_key_pressed(move |_, key, _, modifiers| {
+        if let Some(browser) = browser.upgrade()
+            && browser.confirmation_pending()
+        {
+            let answer = match key {
+                gdk::Key::y | gdk::Key::Y if !modifiers.intersects(
+                    gdk::ModifierType::CONTROL_MASK | gdk::ModifierType::ALT_MASK | gdk::ModifierType::SUPER_MASK
+                ) => Some(true),
+                gdk::Key::n | gdk::Key::N | gdk::Key::Escape => Some(false),
+                _ => None,
+            };
+            if let Some(accepted) = answer {
+                browser.answer_confirmation(accepted);
+            }
+            return glib::Propagation::Stop;
+        }
         if browser
             .upgrade()
             .is_some_and(|browser| browser.terminal.has_focus())

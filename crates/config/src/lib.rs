@@ -119,6 +119,7 @@ pub struct Bookmark {
 pub struct UiSettings {
     pub hints_enabled: bool,
     pub confirm_permanent_delete: bool,
+    pub keyboard_confirmations: bool,
     pub preview_delay_ms: u64,
     pub query_commit_delay_ms: u64,
     pub preview_line_numbers: bool,
@@ -142,6 +143,7 @@ impl Default for UiSettings {
         Self {
             hints_enabled: false,
             confirm_permanent_delete: true,
+            keyboard_confirmations: true,
             preview_delay_ms: 75,
             query_commit_delay_ms: 800,
             preview_line_numbers: true,
@@ -445,12 +447,14 @@ mod tests {
         let path = dir.path().join("config.toml");
         let mut settings = Settings::default();
         settings.ui.hints_enabled = true;
+        settings.ui.keyboard_confirmations = false;
         save_settings(&path, &settings).unwrap();
         assert_eq!(load_settings(Some(&path)).0, settings);
         fs::write(&path, "[ui]\nhints_enabled = true\n").unwrap();
         let loaded = load_settings(Some(&path)).0;
         assert!(loaded.ui.hints_enabled);
         assert!(loaded.ui.confirm_permanent_delete);
+        assert!(loaded.ui.keyboard_confirmations);
     }
 
     #[test]
