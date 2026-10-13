@@ -1,5 +1,5 @@
 Name:           pathpilot
-Version:        0.3.0
+Version:        0.4.0
 Release:        1%{?dist}
 Summary:        Keyboard-first graphical file manager
 
@@ -31,7 +31,8 @@ Requires:       7zip
 %description
 PathPilot is a GTK 4 file manager combining three-column navigation,
 Vim-inspired keyboard controls, responsive previews, safe file operations,
-desktop application integration, and embedded Neovim editing.
+desktop application integration, keyboard-managed tabs, PDF/office/Markdown
+previews, independent viewer windows, and embedded Neovim editing.
 
 %prep
 %autosetup
@@ -58,6 +59,10 @@ appstreamcli validate --no-net %{buildroot}%{_metainfodir}/io.github.RomanRcT.Pa
 %{_metainfodir}/io.github.RomanRcT.PathPilot.metainfo.xml
 
 %changelog
+* Tue Oct 13 2026 RomanRcT <RomanRcT@users.noreply.github.com> - 0.4.0-1
+- Add document and Markdown previews, tabs, independent viewer and compact keyboard help
+- Include offline source dependencies and third-party notices
+
 * Mon Aug 17 2026 RomanRcT <RomanRcT@users.noreply.github.com> - 0.3.0-1
 - Add archive workflows, remote filesystems, bookmarks, and operation progress
 

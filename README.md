@@ -3,9 +3,10 @@
 PathPilot is a keyboard-first graphical file manager for Linux, built with Rust,
 GTK 4, libadwaita, and GIO. It combines ranger-style three-column navigation,
 Vim-inspired controls, conventional mouse interaction, responsive previews,
+keyboard-managed tabs, PDF and office document previews, rendered Markdown,
 an embedded shell, and an embedded Neovim editor.
 
-`v0.3.0` is the current preview release. The local-file workflow and core
+`v0.4.0` is the current preview release. The local-file workflow and core
 SFTP/SMB operations are usable, while accessibility review and broader desktop
 validation are still in progress. See
 [`pathpilot_project_plan.md`](pathpilot_project_plan.md) for the long-term plan.
@@ -18,7 +19,8 @@ PathPilot requires GTK 4.12 or newer, libadwaita 1.5 or newer, GTK4 VTE, and Web
 - Batched GIO enumeration with cancellation and stale-generation rejection.
 - Bounded LRU caching for responsive revisits to remote directories.
 - Live local current/parent directory monitoring with debounced automatic refresh.
-- Name, native content-type icon, kind, size, and modified-time columns.
+- A name-only parent pane; current and directory-preview panes prioritize names
+  and show content-type icons, sizes, and modification times as space permits.
 - Case-insensitive name sorting with directories first.
 - `h/j/k/l`, `gg`, and `G` navigation with cursor restoration per directory.
 - `q` closes the current window.
@@ -43,6 +45,8 @@ PathPilot requires GTK 4.12 or newer, libadwaita 1.5 or newer, GTK4 VTE, and Web
 - GTK-independent commands and key-sequence parsing.
 - Keyboard-driven create, rename, trash, copy, move, and paste operations.
 - Recursive directory copy with progress, cancellation, partial-result cleanup, and no silent overwrites.
+- Inline `y`/`n` confirmations for deletion and “Keep Both” conflicts, with
+  traditional dialogs available through settings.
 - Explicit “Keep Both” conflict handling with unique destination names.
 - Separately confirmed permanent deletion of files and non-empty directory trees.
 - Explicit Normal, Find, Filter, and integrated Text Input modes.
@@ -84,6 +88,9 @@ directory and `h` to return to its parent.
 | `v` | Toggle Visual selection |
 | `g h` / `g d` / `g r` | Home / Downloads / filesystem root |
 | `o e` / `o 1`…`o 9` | System Open With chooser / saved application |
+| `o v` | Open an independent viewer; `j`/`k` browse files and `q` closes it |
+| `t c` / `t x` / `t 1`…`t 9` | Create / close / select tab |
+| `t s` | Select a tab with `j`/`k`, accept after idle or Enter |
 | `o t` | Toggle the embedded terminal |
 | `.` | Toggle hidden items |
 | `Space` | Toggle current selection |
@@ -102,7 +109,8 @@ directory and `h` to return to its parent.
 ## Current limitations
 
 - Remote image previews, archives, Git integration, terminal, and embedded editing are local-only.
-- No tabs, and filtering is limited to names in the current directory.
+- Tabs are window-local and are not restored across application restarts.
+- Filtering is limited to names in the current directory.
 - Direct DOCX/XLSX previews do not require external office applications. PDF requires
   Poppler tools; legacy office formats and the compatibility fallback require LibreOffice.
   Files are limited to 64 MiB, external conversion/rendering has a 60-second timeout per step,
@@ -111,7 +119,8 @@ directory and `h` to return to its parent.
   are read-only. Charts, pictures, conditional formatting and rotated spreadsheet
   text currently use the LibreOffice compatibility fallback. DOCX pagination can
   differ from Microsoft Word depending on the document and available fonts.
-- No archive, audio, or video previews.
+- No audio/video previews or generic archive-content preview; supported local
+  archives can be opened as editable directory sessions.
 - Unknown text detection supports UTF-8; other encodings may still be treated as binary.
 - Remote browsing requires the matching GVfs backend to be installed on the host.
 - Embedded editing requires `nvim` and currently accepts local text files only.
@@ -133,13 +142,13 @@ Download release assets from the GitHub Releases page. On Fedora, install the
 RPM with dependency resolution:
 
 ```bash
-sudo dnf install ./pathpilot-0.3.0-1.*.x86_64.rpm
+sudo dnf install ./pathpilot-0.4.0-1.*.x86_64.rpm
 ```
 
 Install the single-file Flatpak bundle with:
 
 ```bash
-flatpak install --user ./PathPilot-0.3.0-x86_64.flatpak
+flatpak install --user ./PathPilot-0.4.0-x86_64.flatpak
 flatpak run io.github.RomanRcT.PathPilot
 ```
 
@@ -220,7 +229,7 @@ rpmbuild -ba packaging/rpm/pathpilot.spec
 The binary RPM is written to `~/rpmbuild/RPMS/x86_64/`. GitHub release builds
 use the same source archive and spec, and attach both the binary and source RPM
 to the tagged release. To publish packages, push a matching version tag such
-as `v0.3.0`; the workflow can also be started manually for an existing tag.
+as `v0.4.0`; the workflow can also be started manually for an existing tag.
 
 User settings are stored under `${XDG_CONFIG_HOME:-~/.config}/pathpilot/`.
 `config.toml` contains UI state, `bookmarks.toml` contains places for the `g`
@@ -252,7 +261,7 @@ PathPilot is free software distributed under the [GNU General Public License v3.
 
 Document engines are pinned to specific WordCraft/GridCraft revisions in
 `Cargo.toml`. Reviewed updates are proposed through Renovate; automatic merging
-is disabled. Future releases include a verified offline source archive with all
+is disabled. Releases from v0.4.0 include a verified offline source archive with all
 locked Rust dependencies and compile-time assets. See
 [dependency maintenance](docs/dependency-maintenance.md) for setup, updates and
 independent builds.
@@ -330,3 +339,12 @@ file visibility from the source panel. It has its own directory model and does
 not follow subsequent browser navigation. Files opened from inside an archive
 remain available until the viewer closes; extracted files are retained without
 keeping the entire source browser alive.
+
+## Keyboard help
+
+`?` or F1 toggles compact, theme-colored command groups across the window width.
+File changes and clipboard/selection commands have separate groups. Navigation,
+search/sorting, previews, tabs, places and interface controls stay distinct.
+The panel sizes to its content; scrolling is a fallback when space is insufficient.
+The main menu also provides **Keyboard Shortcuts**. The `g` and `b` panels separate
+local places, network connections and user bookmarks.

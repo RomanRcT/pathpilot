@@ -1,5 +1,8 @@
 # Milestone 5: preview prototype
 
+This guide records the original prototype. The current provider behavior below
+includes subsequent v0.4.0 changes; see README.md for document limits and engines.
+
 Milestone 5 replaces the directory-only third column with a coordinated preview stack.
 
 ## Request lifecycle
@@ -14,7 +17,7 @@ Milestone 5 replaces the directory-only third column with a coordinated preview 
 
 ### Text
 
-Text and common source-code MIME types are read through `GInputStream::read_bytes_async`. The loader requests at most 1 MiB plus one byte, uses the extra byte to report truncation, rejects NUL-containing binary data, and converts malformed UTF-8 lossily instead of failing the application.
+Text and common source-code MIME types are read through `GInputStream::read_bytes_async`. The loader requests at most 256 KiB plus one byte, uses the extra byte to report truncation, rejects binary control bytes, and requires valid UTF-8 for unknown MIME types.
 
 Zero-byte files bypass MIME dispatch and render an explicit empty-file state. YAML is recognized through `text/yaml`, `application/yaml`, and the legacy `application/x-yaml` MIME type.
 
@@ -22,7 +25,7 @@ Source files are highlighted with `syntect` 5.3 using its Rust-only regex backen
 
 ### Markdown
 
-Markdown is parsed with `pulldown-cmark` 0.13 in the same worker pipeline. Headings, emphasis, strong text, lists, task markers, block quotes, links, tables, and code receive semantic GTK styling. Raw HTML is discarded, embedded content is never executed, and remote images are not loaded.
+Markdown is parsed with `pulldown-cmark` 0.13 in the same worker pipeline. It produces HTML displayed in a lazy WebKitGTK view with Compact, GitHub or Reading CSS. Headings, emphasis, lists, task markers, block quotes, links, tables and code retain their document structure. Raw HTML is discarded, embedded content is never executed, and remote images are not loaded. Local relative images are supported for native files. Markdown is rendered beyond the 24 KiB syntax-highlighting threshold, up to the automatic 256 KiB text cap; `u` requests the full preview.
 
 ### Images
 

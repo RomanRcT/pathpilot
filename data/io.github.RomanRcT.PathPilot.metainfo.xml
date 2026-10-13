@@ -12,7 +12,9 @@
     <p>
       PathPilot combines three-column navigation, Vim-inspired commands,
       responsive previews, safe file operations, desktop integration, and an
-      embedded Neovim editor in a GTK 4 application.
+      embedded Neovim editor in a GTK 4 application. Keyboard-managed tabs,
+      independent viewer windows, and PDF, office and rendered Markdown previews
+      keep navigation and reading in the same workflow.
     </p>
   </description>
   <launchable type="desktop-id">io.github.RomanRcT.PathPilot.desktop</launchable>
@@ -26,6 +28,12 @@
   </requires>
   <content_rating type="oars-1.1" />
   <releases>
+    <release version="0.4.0" date="2026-10-13">
+      <description>
+        <p>Added direct DOCX/XLSX and PDF previews, themed HTML Markdown, independent viewer windows, keyboard-managed tabs, inline confirmations, and compact grouped keyboard help.</p>
+        <p>Improved filename visibility and unknown text detection. Releases include verified offline build sources and third-party license notices.</p>
+      </description>
+    </release>
     <release version="0.3.0" date="2026-08-17">
       <description>
         <p>Added SFTP and SMB workflows, archive editing, persistent bookmarks, full text previews, and a non-modal progress shelf for copy and delete operations.</p>

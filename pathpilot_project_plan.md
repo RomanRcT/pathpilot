@@ -9,18 +9,32 @@
 **Desktop integration:** GIO / GLib / FreeDesktop specifications  
 **License:** GPL-3.0-or-later
 
-### Current implementation status (2026-08-17)
+### Current implementation status (2026-10-13)
 
-The v0.3.x codebase has completed the navigation, preview, file-operation, and
-input foundations described below. It includes packaged RPM/Flatpak artifacts,
-libadwaita integration, configurable appearance, hidden-file controls,
-theme-aware previews, embedded Neovim, an embedded shell terminal, directory
-monitoring and sorting, discontiguous selection, and editable archive sessions.
-SFTP and SMB browsing and file operations are available through GIO/GVfs with
-bounded directory caching and prefetch. Copy and permanent-delete operations
-use a non-modal progress shelf with cancellation. Tabs, general filtering,
-drag-and-drop, broader remote protocols, and richer document previews remain
-planned work.
+The v0.4.0 preview implements the navigation, preview, file-operation and input
+foundations, plus keyboard-managed tabs, filename find/filter with optional idle
+commit, inline y/n confirmations, and compact grouped keyboard help. The parent
+pane is name-only; other file lists prioritize names as width decreases.
+PDF pages use Poppler; DOCX and XLSX render directly with pinned WordCraft and
+GridCraft engines. Legacy office formats use LibreOffice conversion. Unknown
+UTF-8 text is detected by content. Markdown uses pulldown-cmark and WebKitGTK
+with Compact, GitHub and Reading themes. Independent viewer windows preserve
+the current document page and can browse neighboring files with j/k.
+
+RPM/Flatpak packaging, libadwaita appearance, hidden files, embedded Neovim and
+shell, directory monitoring/sorting, selection, editable archive sessions,
+SFTP/SMB via GIO/GVfs, bookmarks and cancellable operation progress are available.
+Releases include vendored offline build sources and license notices; Renovate
+proposes reviewed dependency updates without automatic merging.
+
+Phases 0–4 are implemented. Phase 5 remains partial: accessibility review,
+drag-and-drop, broader desktop validation and measured performance regression
+coverage remain open. Tab-session restoration, a Markdown source/render toggle,
+broader remote protocols and media previews remain future work.
+
+The architecture sketches and original milestone/prompt sections below record
+the design history, not instructions to restart implementation. Current behavior
+and configuration are documented in README.md and docs/.
 
 ---
 
@@ -153,6 +167,7 @@ Keyboard focus must remain predictable after mouse interactions.
   - Markdown source and rendered Markdown;
   - common image formats;
   - directories;
+  - PDF and office documents;
   - basic file metadata.
 - Open with default application.
 - Open-with menu.
@@ -168,8 +183,6 @@ Keyboard focus must remain predictable after mouse interactions.
 - Plugin API.
 - Broader archive format and remote-archive support beyond implemented local archive sessions.
 - Git status overlays.
-- PDF preview.
-- Office document preview.
 - Video/audio playback.
 - File synchronization.
 - Advanced bulk rename.
@@ -493,7 +506,8 @@ Selection changes
 
 #### Markdown
 
-- Toggle between rendered and source view.
+- Render HTML through WebKitGTK with configurable bundled themes.
+- A rendered/source toggle is still future work.
 - Render headings, paragraphs, lists, code blocks, links, and tables.
 - Do not load remote images automatically in the MVP.
 
@@ -510,10 +524,13 @@ Selection changes
 - Show a short list of contents.
 - Optionally show aggregate size only on explicit request; never calculate recursively during normal navigation.
 
-### 11.5 Later Preview Providers
+### 11.5 Document Providers and Remaining Work
 
-- PDF via Poppler.
-- Office via LibreOffice headless conversion to PDF/image.
+Implemented: PDF via Poppler; direct DOCX via WordCraft and XLSX via GridCraft;
+legacy office formats and compatibility fallback via LibreOffice. Independent
+viewer windows reuse these providers without sharing navigation state.
+
+Still planned:
 - Archives via libarchive.
 - Audio/video metadata and thumbnails via GStreamer.
 - Fonts.
@@ -699,27 +716,25 @@ Suggested location:
 ~/.cache/pathpilot/
 ```
 
-Initial settings:
+Current settings (see README for the complete user-facing examples):
 
 ```toml
 [ui]
 show_hidden = false
-confirm_permanent_delete = true
 preview_delay_ms = 75
-compact_rows = true
-restore_tabs = true
-
-[preview]
-max_text_bytes = 1048576
-max_text_lines = 10000
-image_cache_mb = 256
-render_markdown = true
-
-[navigation]
-wrap_cursor = false
-folders_first = true
-case_sensitive_sort = false
+preview_line_numbers = true
+color_scheme = "system"
+markdown_theme = "compact"
+keyboard_confirmations = true
+query_commit_delay_ms = 800
+tab_switch_delay_ms = 500
+sort_key = "name"
+sort_descending = false
 ```
+
+Bookmarks live in `bookmarks.toml`; Open With history uses a separate file.
+Tabs are window-local and not persisted. Preview limits are implementation
+limits, not a `[preview]` configuration section.
 
 Invalid configuration should produce a useful warning and fall back to safe defaults.
 
@@ -903,6 +918,8 @@ Install desktop metadata:
 
 ## 22. Development Phases
 
+Phases 0–4 are complete; Phase 5 is partially complete as summarized above.
+
 ### Phase 0 — Technical Spike
 
 Goal: prove that GTK 4 can deliver the required interaction speed.
@@ -1001,7 +1018,7 @@ Exit criteria:
 - all primary operations are usable without a mouse;
 - ordinary mouse workflows remain intuitive.
 
-### Phase 5 — Polish and Fedora Packaging
+### Phase 5 — Polish and Fedora Packaging (partial)
 
 Deliverables:
 
@@ -1081,7 +1098,7 @@ Ask Codex to:
 
 ## 24. First Codex Prompt
 
-Use the following prompt to begin implementation:
+Historical bootstrap prompt, retained for context; not an instruction for current development:
 
 ```text
 We are starting a new Rust project named PathPilot: a fast, ranger-style graphical file manager for Fedora Linux using GTK 4 and gtk4-rs.

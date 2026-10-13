@@ -4,13 +4,34 @@ All notable changes to PathPilot are documented in this file.
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-10-13
+
 ### Added
+
+- Keyboard-managed, window-local tabs with independent browser state, a shared operation clipboard and optional idle selection confirmation.
+- Independent viewer windows (`o v`) with neighboring-file navigation, document paging and retained archive resources.
+- PDF and office previews with cached document sessions/pages; direct DOCX via WordCraft and XLSX via GridCraft, with LibreOffice compatibility conversion for other formats.
+- Themed HTML Markdown previews via pulldown-cmark and WebKitGTK: Compact, GitHub and Reading, local images and heading anchors, without active page content.
+- UTF-8 content detection for unknown text MIME types.
+- Inline y/n file-operation confirmations, with traditional dialogs available in settings.
+- Compact colored command groups, a Keyboard Shortcuts menu item, and grouped places/bookmark hints.
+- Verified offline source archives, bundled third-party notices, About credits and reviewed Renovate dependency updates.
 
 - Live name filtering of the current directory on `/`, with rows narrowing on every keystroke, `Enter` applying the filter in Normal mode, and `Escape` clearing it.
 - `Filter` as an explicit `AppMode` state with its own entry and cancel transitions.
 - A find or filter query commits itself after `[ui] query_commit_delay_ms` of idle time (default 800 ms, `0` disables it), so navigation with `j`, `k`, `h`, `l`, `g`, and `G` resumes without `Enter` or `Escape`.
 
+### Changed
+
+- Parent panes show only names; other lists omit the redundant type column and prioritize filenames over metadata.
+- Document paging uses n/N as well as the existing alternative keys, and document pages stay centered while resizing.
+- WebKitGTK 6.0 is required for native builds and supplied by the GNOME Flatpak runtime.
+
 ### Fixed
+
+- Markdown larger than the syntax-highlighting threshold retains HTML rendering up to the automatic text cap.
+- About uses the active window after the original window closes.
+- GUI CI isolates tab tests and configures Ubuntu runners for the WebKit sandbox.
 
 - Filename find (`f`, Enter, `n`, `N`) keeps incremental matching after the filter work; previously both modes shared one branch and find stopped matching.
 - Cancelling or navigating away always clears the pane filter, so hidden rows cannot reappear as permanently missing entries.
@@ -93,4 +114,5 @@ First preview release.
 [0.3.0]: https://github.com/RomanRcT/pathpilot/releases/tag/v0.3.0
 [0.2.0]: https://github.com/RomanRcT/pathpilot/releases/tag/v0.2.0
 [0.1.0]: https://github.com/RomanRcT/pathpilot/releases/tag/v0.1.0
-[Unreleased]: https://github.com/RomanRcT/pathpilot/compare/v0.3.0...HEAD
+[0.4.0]: https://github.com/RomanRcT/pathpilot/releases/tag/v0.4.0
+[Unreleased]: https://github.com/RomanRcT/pathpilot/compare/v0.4.0...HEAD

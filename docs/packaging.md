@@ -9,7 +9,8 @@ installed by `make install PREFIX=<prefix> DESTDIR=<root>`.
 The Fedora spec is `packaging/rpm/pathpilot.spec`. A release source archive must
 be named `pathpilot-<version>.tar.gz` and contain a matching top-level directory.
 The package builds with Cargo, installs under `/usr`, validates desktop metadata,
-and lets RPM discover linked-library dependencies. Neovim is a recommendation
+and lets RPM discover linked-library dependencies. The release workflow repacks
+the verified vendored offline source as this RPM build archive. Neovim is a recommendation
 because only embedded editing requires it. WebKitGTK 6.0 is a build and runtime
 dependency for Markdown HTML preview.
 

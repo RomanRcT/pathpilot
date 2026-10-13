@@ -49,7 +49,7 @@ Review new bundled resources and their licenses on updates as well.
 
 ```sh
 python3 tools/create-offline-source.py --output release-assets
-python3 tools/verify-offline-source.py release-assets/pathpilot-0.3.0-offline-source.tar.gz --release
+python3 tools/verify-offline-source.py release-assets/pathpilot-0.4.0-offline-source.tar.gz --release
 ```
 
 Use the current package version in the filename. The creator downloads locked
