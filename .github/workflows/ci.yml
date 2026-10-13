@@ -22,6 +22,11 @@ jobs:
       - name: Install native and document preview dependencies
         run: sudo apt-get update && sudo apt-get install --yes libgtk-4-dev libadwaita-1-dev libvte-2.91-gtk4-dev libwebkitgtk-6.0-dev pkg-config xvfb xauth dbus poppler-utils libreoffice-writer libreoffice-calc libreoffice-impress
 
+      # Ubuntu 24.04 restricts unprivileged user namespaces through AppArmor.
+      # WebKit's bubblewrap sandbox needs them on this disposable test runner.
+      - name: Allow WebKit sandbox on the test runner
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
@@ -51,7 +56,7 @@ jobs:
       - name: Test tab navigation, clipboard and idle confirmation
         env:
           G_DEBUG: fatal-criticals
-        run: dbus-run-session -- xvfb-run -a cargo test -p pathpilot-ui-gtk tabs::tests::workspace_tabs_keep_state_share_clipboard_and_commit_selection -- --ignored --test-threads=1
+        run: dbus-run-session -- xvfb-run -a cargo test -p pathpilot-ui-gtk --lib tabs::tests::workspace_tabs_keep_state_share_clipboard_and_commit_selection -- --ignored --test-threads=1
 
       - name: Test Markdown HTML with WebKitGTK
         env:
