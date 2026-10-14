@@ -191,7 +191,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: flatpak-bundle
-          path: offline-source/pathpilot-*/PathPilot-*.flatpak
+          path: offline-source/pathpilot-${{ needs.validate.outputs.version }}/PathPilot-*.flatpak
           if-no-files-found: error
 
   publish:
@@ -206,9 +206,28 @@ jobs:
           path: release-assets
           merge-multiple: true
 
-      - name: Create checksums
+      - name: Normalize asset paths and create checksums
         working-directory: release-assets
-        run: sha256sum -- * > SHA256SUMS
+        run: |
+          python3 - <<'PYTHON'
+          from pathlib import Path
+          import hashlib
+          root = Path('.')
+          for source in sorted(root.rglob('*')):
+              if source.is_file() and source.parent != root:
+                  target = root / source.name
+                  if target.exists():
+                      raise RuntimeError(f'Duplicate release asset: {source.name}')
+                  source.rename(target)
+          for directory in sorted((p for p in root.rglob('*') if p.is_dir()), key=lambda p: len(p.parts), reverse=True):
+              directory.rmdir()
+          assets = sorted(p for p in root.iterdir() if p.is_file() and p.name != 'SHA256SUMS')
+          with Path('SHA256SUMS').open('w') as output:
+              for asset in assets:
+                  with asset.open('rb') as source:
+                      digest = hashlib.file_digest(source, 'sha256').hexdigest()
+                  output.write(f'{digest}  {asset.name}\n')
+          PYTHON
 
       - name: Create release when needed
         env:
