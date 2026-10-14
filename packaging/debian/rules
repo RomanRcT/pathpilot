@@ -1,0 +1,18 @@
+#!/usr/bin/make -f
+
+export CARGO_NET_OFFLINE = true
+
+%:
+	dh $@
+
+override_dh_auto_build:
+	cargo build --release --locked --offline
+
+override_dh_auto_install:
+	$(MAKE) install PREFIX=/usr DESTDIR=$(CURDIR)/debian/pathpilot
+
+# Workspace and graphical tests run in CI, separately from binary packaging.
+override_dh_auto_test:
+
+# A vendored release source is an input; do not clean/rewrite its dependencies.
+override_dh_auto_clean:

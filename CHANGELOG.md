@@ -4,6 +4,10 @@ All notable changes to PathPilot are documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+- Ubuntu 24.04 amd64 DEB packaging with generated shared-library dependencies and standalone backfill of existing GitHub releases.
+
 ## [0.4.0] - 2026-10-13
 
 ### Added

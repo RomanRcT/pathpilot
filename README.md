@@ -145,6 +145,17 @@ RPM with dependency resolution:
 sudo dnf install ./pathpilot-0.4.0-1.*.x86_64.rpm
 ```
 
+For Ubuntu 24.04 amd64, install the DEB with dependency resolution:
+
+```sh
+sudo apt install ./pathpilot_0.4.0-1_amd64.deb
+```
+
+The DEB is built on Ubuntu 24.04 and declares native GTK 4.12+, libadwaita 1.5+
+and WebKitGTK dependencies. Older distributions such as Ubuntu 22.04 and Debian
+12 are not supported by this package; use Flatpak there. Debian 13 has compatible
+library versions but has not been separately installation-tested.
+
 Install the single-file Flatpak bundle with:
 
 ```bash
@@ -158,6 +169,10 @@ normal configuration remain on the host. Direct DOCX/XLSX previews run inside
 PathPilot; PDF and compatibility previews use host Poppler/LibreOffice through `flatpak-spawn --host`; temporary copies are kept
 in a bounded preview cache and removed when evicted or when PathPilot exits. The manifest therefore also grants
 access to the Flatpak portal service.
+
+The DEB recommends Poppler for PDF and GVfs backends for remote locations.
+LibreOffice and Neovim are optional suggestions; install them for legacy office
+previews and embedded editing. Direct DOCX/XLSX previews work without LibreOffice.
 
 ## Fedora development setup
 

@@ -1,0 +1,109 @@
+name: Debian package
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Published release tag to receive the DEB package
+        required: true
+        default: v0.4.0
+  workflow_call:
+    inputs:
+      tag:
+        type: string
+        required: true
+      source_run:
+        type: string
+        required: true
+
+permissions:
+  contents: write
+  actions: read
+
+jobs:
+  deb:
+    name: Ubuntu 24.04 amd64 DEB
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      RELEASE_TAG: ${{ inputs.tag }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Check out packaging recipes
+        uses: actions/checkout@v4
+
+      - name: Install native and Debian build tools
+        run: sudo apt-get update && sudo apt-get install --yes debhelper dpkg-dev fakeroot libgtk-4-dev libadwaita-1-dev libvte-2.91-gtk4-dev libwebkitgtk-6.0-dev pkg-config desktop-file-utils appstream
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Download source from calling release build
+        if: inputs.source_run != ''
+        uses: actions/download-artifact@v4
+        with:
+          name: offline-source
+          path: source-archive
+          run-id: ${{ inputs.source_run }}
+          github-token: ${{ github.token }}
+
+      - name: Download published offline source
+        if: inputs.source_run == ''
+        run: |
+          mkdir source-archive
+          gh release download "$RELEASE_TAG" --pattern '*-offline-source.tar.gz*' --dir source-archive
+
+      - name: Verify and extract source
+        run: |
+          set -euo pipefail
+          cd source-archive
+          sha256sum --check *.sha256
+          mkdir ../offline-source
+          tar -xzf "pathpilot-${RELEASE_TAG#v}-offline-source.tar.gz" -C ../offline-source
+
+      - name: Build binary DEB with generated library dependencies
+        run: python3 tools/build-deb.py "offline-source/pathpilot-${RELEASE_TAG#v}" --output release-assets
+
+      - name: Validate contents, dependencies and installation
+        run: |
+          set -euo pipefail
+          version="${RELEASE_TAG#v}"
+          package="release-assets/pathpilot_${version}-1_amd64.deb"
+          test "$(dpkg-deb -f "$package" Package)" = pathpilot
+          test "$(dpkg-deb -f "$package" Version)" = "${version}-1"
+          test "$(dpkg-deb -f "$package" Architecture)" = amd64
+          dpkg-deb -I "$package"
+          dpkg-deb -x "$package" package-check
+          desktop-file-validate package-check/usr/share/applications/io.github.RomanRcT.PathPilot.desktop
+          appstreamcli validate --no-net package-check/usr/share/metainfo/io.github.RomanRcT.PathPilot.metainfo.xml
+          test -x package-check/usr/bin/pathpilot
+          test -f package-check/usr/share/licenses/pathpilot/github-markdown-css/LICENSE
+          test -d package-check/usr/share/licenses/pathpilot/wordcraft
+          test -d package-check/usr/share/licenses/pathpilot/gridcraft
+          if ldd package-check/usr/bin/pathpilot | grep 'not found'; then exit 1; fi
+          sudo apt-get install --yes --no-install-recommends "./$package"
+          test "$(dpkg-query -W -f='${Version}' pathpilot)" = "${version}-1"
+
+      - name: Upload DEB artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: deb-package
+          path: release-assets/*.deb
+          if-no-files-found: error
+
+      - name: Add DEB and updated checksums to existing release
+        if: inputs.source_run == ''
+        run: |
+          gh release download "$RELEASE_TAG" --pattern SHA256SUMS --dir release-assets
+          python3 - <<'PYTHON'
+          from pathlib import Path
+          import hashlib
+          root = Path('release-assets')
+          sums = root / 'SHA256SUMS'
+          entries = dict(line.split('  ', 1)[::-1] for line in sums.read_text().splitlines())
+          for package in root.glob('*.deb'):
+              with package.open('rb') as source:
+                  entries[package.name] = hashlib.file_digest(source, 'sha256').hexdigest()
+          sums.write_text(''.join(f'{digest}  {name}\n' for name, digest in sorted(entries.items())))
+          PYTHON
+          gh release upload "$RELEASE_TAG" release-assets/*.deb release-assets/SHA256SUMS --clobber

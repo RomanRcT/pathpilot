@@ -14,6 +14,29 @@ the verified vendored offline source as this RPM build archive. Neovim is a reco
 because only embedded editing requires it. WebKitGTK 6.0 is a build and runtime
 dependency for Markdown HTML preview.
 
+## DEB
+
+`packaging/debian/` contains a debhelper 13 recipe. The Ubuntu 24.04 amd64 build
+uses the same verified offline source archive as RPM and Flatpak. Run
+`python3 tools/build-deb.py <fresh-offline-source-tree> --output release-assets`
+with Rust 1.90+, debhelper, dpkg-dev, fakeroot and the native development headers
+installed. The helper generates a Debian changelog from the source Cargo version.
+It skips dpkg's build-dependency database check because CI uses rustup; native
+build packages are explicitly installed by the workflow.
+
+Debhelper generates shared-library dependencies from the actual ELF binary;
+minimum GTK/libadwaita versions are also declared explicitly. `7zip` is required;
+Poppler and GVfs backends are recommended, LibreOffice and Neovim are optional.
+Desktop metadata, AppStream and license notices are included. The build validates
+metadata, checks linked libraries and installs the finished package with apt.
+Ubuntu 24.04 is the tested DEB target; Debian 13 is a compatibility candidate.
+Older GTK distributions require Flatpak.
+
+`.github/workflows/deb-package.yml` is reusable by the main release workflow.
+A standalone dispatch with an existing release tag downloads its published
+source archive, builds only the DEB and appends it to that release's SHA256SUMS.
+This permits adding a DEB to v0.4.0 without moving its tag or rebuilding RPM/Flatpak.
+
 ## Flatpak
 
 The manifest is
@@ -28,7 +51,7 @@ user's existing configuration and plugins.
 
 ## Automation
 
-`.github/workflows/release-packages.yml` builds both formats on packaging pull
+`.github/workflows/release-packages.yml` builds all three formats on packaging pull
 requests. Tag pushes and manual runs additionally generate `SHA256SUMS` and
 upload the packages to the selected GitHub Release. Manual dispatch is used to
 rebuild or replace package assets for an existing tag without moving the tag.

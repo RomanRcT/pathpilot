@@ -6,6 +6,7 @@ on:
   pull_request:
     paths:
       - '.github/workflows/release-packages.yml'
+      - '.github/workflows/deb-package.yml'
       - 'packaging/**'
       - 'Makefile'
       - 'Cargo.toml'
@@ -25,6 +26,7 @@ on:
 
 permissions:
   contents: write
+  actions: read
 
 env:
   RELEASE_TAG: ${{ github.event_name == 'pull_request' && 'v0.4.0' || (github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name) }}
@@ -194,10 +196,18 @@ jobs:
           path: offline-source/pathpilot-${{ needs.validate.outputs.version }}/PathPilot-*.flatpak
           if-no-files-found: error
 
+  deb:
+    name: Debian package
+    needs: [validate, source]
+    uses: ./.github/workflows/deb-package.yml
+    with:
+      tag: v${{ needs.validate.outputs.version }}
+      source_run: ${{ github.run_id }}
+
   publish:
     name: Attach packages to release
     if: github.event_name != 'pull_request'
-    needs: [rpm, flatpak, source]
+    needs: [rpm, flatpak, deb, source]
     runs-on: ubuntu-24.04
     steps:
       - name: Download packages

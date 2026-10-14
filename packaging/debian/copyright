@@ -1,0 +1,15 @@
+Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
+Upstream-Name: PathPilot
+Source: https://github.com/RomanRcT/pathpilot
+
+Files: *
+Copyright: 2026 PathPilot contributors
+License: GPL-3+
+ PathPilot is distributed under the GNU General Public License, version 3
+ or (at your option) any later version. The complete license is installed
+ in /usr/share/doc/pathpilot/LICENSE.gz and /usr/share/common-licenses/GPL-3.
+Comment:
+ The binary incorporates third-party Rust libraries and document engine assets.
+ Their source licenses are included in the corresponding vendored offline source
+ archive. WordCraft, GridCraft, bundled font and GitHub Markdown CSS notices
+ are additionally installed under /usr/share/licenses/pathpilot/.

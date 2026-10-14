@@ -39,7 +39,9 @@ preview release; configuration and behavior may evolve before 1.0.
 
 ## Installation and builds
 
-Download the Fedora 44 x86_64 RPM or x86_64 Flatpak bundle from this release.
+Download the Fedora 44 x86_64 RPM, Ubuntu 24.04 amd64 DEB or x86_64 Flatpak
+bundle from this release. Install the DEB with `sudo apt install ./pathpilot_0.4.0-1_amd64.deb`.
+Older Ubuntu/Debian distributions with GTK below 4.12 require Flatpak.
 `SHA256SUMS` covers the attached assets. The `offline-source` archive includes
 locked Rust dependencies, Craft compile-time assets and license notices, and is
 built in CI with an empty Cargo cache and network access disabled for Cargo.

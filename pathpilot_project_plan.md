@@ -21,7 +21,7 @@ UTF-8 text is detected by content. Markdown uses pulldown-cmark and WebKitGTK
 with Compact, GitHub and Reading themes. Independent viewer windows preserve
 the current document page and can browse neighboring files with j/k.
 
-RPM/Flatpak packaging, libadwaita appearance, hidden files, embedded Neovim and
+RPM/DEB/Flatpak packaging (DEB targets Ubuntu 24.04 amd64), libadwaita appearance, hidden files, embedded Neovim and
 shell, directory monitoring/sorting, selection, editable archive sessions,
 SFTP/SMB via GIO/GVfs, bookmarks and cancellable operation progress are available.
 Releases include vendored offline build sources and license notices; Renovate

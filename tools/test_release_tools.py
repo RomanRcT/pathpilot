@@ -18,9 +18,18 @@ def load(name, filename):
 
 creator = load("source_creator", "create-offline-source.py")
 verifier = load("source_verifier", "verify-offline-source.py")
+deb_builder = load("deb_builder", "build-deb.py")
 
 
 class ReleaseToolsTests(unittest.TestCase):
+    def test_debian_changelog_tracks_release_version(self):
+        text = deb_builder.changelog("0.4.0", 0)
+        self.assertTrue(text.startswith("pathpilot (0.4.0-1)"))
+        self.assertIn("Thu, 01 Jan 1970", text)
+        for invalid in ["v0.4.0", "0.4.0\nInjected: yes", "../release"]:
+            with self.assertRaises(ValueError):
+                deb_builder.changelog(invalid, 0)
+
     def test_copy_excludes_local_credentials_and_build_outputs(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary) / "repo"

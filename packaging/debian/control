@@ -1,0 +1,18 @@
+Source: pathpilot
+Section: utils
+Priority: optional
+Maintainer: RomanRcT <RomanRcT@users.noreply.github.com>
+Build-Depends: debhelper-compat (= 13), cargo (>= 1.90), rustc (>= 1.90), pkg-config, libgtk-4-dev (>= 4.12), libadwaita-1-dev (>= 1.5), libvte-2.91-gtk4-dev, libwebkitgtk-6.0-dev
+Standards-Version: 4.6.2
+Homepage: https://github.com/RomanRcT/pathpilot
+Rules-Requires-Root: no
+
+Package: pathpilot
+Architecture: any
+Depends: ${shlibs:Depends}, ${misc:Depends}, libgtk-4-1 (>= 4.12), libadwaita-1-0 (>= 1.5), 7zip
+Recommends: poppler-utils, gvfs-backends
+Suggests: libreoffice-writer, libreoffice-calc, libreoffice-impress, neovim
+Description: keyboard-first graphical file manager
+ PathPilot combines ranger-style navigation, Vim-inspired keyboard controls,
+ tabs, PDF/office/Markdown previews, independent viewer windows, SFTP/SMB,
+ an embedded shell terminal and Neovim editing in a native GTK 4 interface.
