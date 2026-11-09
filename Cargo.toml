@@ -40,11 +40,11 @@ pulldown-cmark = { version = "0.13.4", default-features = false, features = ["ht
 webkit6 = "0.5"
 
 # Pin the document engines to fixed revisions; no editor UI dependencies.
-wordcraft-doc = { git = "https://github.com/storytold/wordcraft", rev = "159b84f54c74e9e82fb3109b758ae7dd6f4e3ab0" }
-wordcraft-docx = { git = "https://github.com/storytold/wordcraft", rev = "159b84f54c74e9e82fb3109b758ae7dd6f4e3ab0" }
-wordcraft-fonts = { git = "https://github.com/storytold/wordcraft", rev = "159b84f54c74e9e82fb3109b758ae7dd6f4e3ab0" }
-wordcraft-layout = { git = "https://github.com/storytold/wordcraft", rev = "159b84f54c74e9e82fb3109b758ae7dd6f4e3ab0" }
-wordcraft-render = { git = "https://github.com/storytold/wordcraft", rev = "159b84f54c74e9e82fb3109b758ae7dd6f4e3ab0" }
+wordcraft-doc = { git = "https://github.com/storytold/wordcraft", rev = "7b8c0ba5eb7300922c485426bccf8a4c347d866a" }
+wordcraft-docx = { git = "https://github.com/storytold/wordcraft", rev = "7b8c0ba5eb7300922c485426bccf8a4c347d866a" }
+wordcraft-fonts = { git = "https://github.com/storytold/wordcraft", rev = "7b8c0ba5eb7300922c485426bccf8a4c347d866a" }
+wordcraft-layout = { git = "https://github.com/storytold/wordcraft", rev = "7b8c0ba5eb7300922c485426bccf8a4c347d866a" }
+wordcraft-render = { git = "https://github.com/storytold/wordcraft", rev = "7b8c0ba5eb7300922c485426bccf8a4c347d866a" }
 gridcraft-core = { git = "https://github.com/storytold/gridcraft", rev = "84acf6293b1dc1fc09837524e035d674eb4d6741" }
 gridcraft-model = { git = "https://github.com/storytold/gridcraft", rev = "84acf6293b1dc1fc09837524e035d674eb4d6741" }
 gridcraft-xlsx = { git = "https://github.com/storytold/gridcraft", rev = "84acf6293b1dc1fc09837524e035d674eb4d6741" }
