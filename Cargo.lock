@@ -35,6 +35,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cc7bb162ec39d46ab1ca8c77bf72e890535becd1751bb45f64c597edb4c8c6b3"
 
 [[package]]
+name = "android_system_properties"
+version = "0.1.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ae221649c9976a6f6c56ae1facf410f3ddb33cc661c4b7b61020a912d4237fbc"
+dependencies = [
+ "libc",
+]
+
+[[package]]
 name = "arbitrary"
 version = "1.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -171,6 +180,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "cc"
+version = "1.11.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4ff2a8126fff0f8c839080d619675a585e61720bb12d2baceae45769fd66f155"
+dependencies = [
+ "find-msvc-tools",
+ "shlex",
+]
+
+[[package]]
 name = "cfb"
 version = "0.15.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -196,6 +215,17 @@ name = "cfg-if"
 version = "1.0.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9330f8b2ff13f34540b44e946ef35111825727b38d33286ef986142615121801"
+
+[[package]]
+name = "chrono"
+version = "0.4.45"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1aa79e62e7697b8e29b513a68abacf485adcd1fe8284a4316c5ae868e6633327"
+dependencies = [
+ "iana-time-zone",
+ "num-traits",
+ "windows-link",
+]
 
 [[package]]
 name = "cipher"
@@ -233,6 +263,12 @@ name = "const-oid"
 version = "0.10.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a6ef517f0926dd24a1582492c791b6a4818a4d94e789a334894aa15b0d12f55c"
+
+[[package]]
+name = "core-foundation-sys"
+version = "0.8.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "773648b94d0e5d620f64f280777445740e61fe701025087ec8b57f45c791888b"
 
 [[package]]
 name = "cpubits"
@@ -381,6 +417,17 @@ dependencies = [
 
 [[package]]
 name = "fancy-regex"
+version = "0.14.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6e24cb5a94bcae1e5408b0effca5cd7172ea3c5755049c5f3af4cd283a165298"
+dependencies = [
+ "bit-set",
+ "regex-automata",
+ "regex-syntax",
+]
+
+[[package]]
+name = "fancy-regex"
 version = "0.16.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "998b056554fbe42e03ae0e152895cd1a7e1002aec800fdc6635d20270260c46f"
@@ -426,6 +473,12 @@ dependencies = [
  "memoffset",
  "rustc_version",
 ]
+
+[[package]]
+name = "find-msvc-tools"
+version = "0.1.15"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1c66915cc5391097de7a2b0b972e8505aa33c0df401fd3a6811dbdb32881ba48"
 
 [[package]]
 name = "flate2"
@@ -740,8 +793,8 @@ dependencies = [
 
 [[package]]
 name = "gridcraft-calc"
-version = "0.6.1"
-source = "git+https://github.com/storytold/gridcraft?rev=84acf6293b1dc1fc09837524e035d674eb4d6741#84acf6293b1dc1fc09837524e035d674eb4d6741"
+version = "0.16.0"
+source = "git+https://github.com/storytold/gridcraft?rev=7102429a9a2fd9f6fba8e06238a1cce5807fb1b0#7102429a9a2fd9f6fba8e06238a1cce5807fb1b0"
 dependencies = [
  "gridcraft-core",
  "gridcraft-formula",
@@ -753,8 +806,8 @@ dependencies = [
 
 [[package]]
 name = "gridcraft-chart"
-version = "0.6.1"
-source = "git+https://github.com/storytold/gridcraft?rev=84acf6293b1dc1fc09837524e035d674eb4d6741#84acf6293b1dc1fc09837524e035d674eb4d6741"
+version = "0.16.0"
+source = "git+https://github.com/storytold/gridcraft?rev=7102429a9a2fd9f6fba8e06238a1cce5807fb1b0#7102429a9a2fd9f6fba8e06238a1cce5807fb1b0"
 dependencies = [
  "gridcraft-calc",
  "gridcraft-core",
@@ -765,24 +818,26 @@ dependencies = [
 
 [[package]]
 name = "gridcraft-core"
-version = "0.6.1"
-source = "git+https://github.com/storytold/gridcraft?rev=84acf6293b1dc1fc09837524e035d674eb4d6741#84acf6293b1dc1fc09837524e035d674eb4d6741"
+version = "0.16.0"
+source = "git+https://github.com/storytold/gridcraft?rev=7102429a9a2fd9f6fba8e06238a1cce5807fb1b0#7102429a9a2fd9f6fba8e06238a1cce5807fb1b0"
 dependencies = [
+ "chrono",
  "js-sys",
  "serde",
- "thiserror",
+ "thiserror 2.0.19",
 ]
 
 [[package]]
 name = "gridcraft-engine"
-version = "0.6.1"
-source = "git+https://github.com/storytold/gridcraft?rev=84acf6293b1dc1fc09837524e035d674eb4d6741#84acf6293b1dc1fc09837524e035d674eb4d6741"
+version = "0.16.0"
+source = "git+https://github.com/storytold/gridcraft?rev=7102429a9a2fd9f6fba8e06238a1cce5807fb1b0#7102429a9a2fd9f6fba8e06238a1cce5807fb1b0"
 dependencies = [
  "gridcraft-calc",
  "gridcraft-chart",
  "gridcraft-core",
  "gridcraft-formula",
  "gridcraft-functions",
+ "gridcraft-math",
  "gridcraft-model",
  "gridcraft-numfmt",
  "gridcraft-pdf",
@@ -791,66 +846,81 @@ dependencies = [
  "log",
  "serde",
  "serde_json",
- "thiserror",
+ "thiserror 2.0.19",
+ "web-time",
 ]
 
 [[package]]
 name = "gridcraft-formula"
-version = "0.6.1"
-source = "git+https://github.com/storytold/gridcraft?rev=84acf6293b1dc1fc09837524e035d674eb4d6741#84acf6293b1dc1fc09837524e035d674eb4d6741"
+version = "0.16.0"
+source = "git+https://github.com/storytold/gridcraft?rev=7102429a9a2fd9f6fba8e06238a1cce5807fb1b0#7102429a9a2fd9f6fba8e06238a1cce5807fb1b0"
 dependencies = [
  "gridcraft-core",
  "serde",
- "thiserror",
+ "thiserror 2.0.19",
 ]
 
 [[package]]
 name = "gridcraft-functions"
-version = "0.6.1"
-source = "git+https://github.com/storytold/gridcraft?rev=84acf6293b1dc1fc09837524e035d674eb4d6741#84acf6293b1dc1fc09837524e035d674eb4d6741"
+version = "0.16.0"
+source = "git+https://github.com/storytold/gridcraft?rev=7102429a9a2fd9f6fba8e06238a1cce5807fb1b0#7102429a9a2fd9f6fba8e06238a1cce5807fb1b0"
 dependencies = [
  "gridcraft-core",
  "regex",
 ]
 
 [[package]]
+name = "gridcraft-math"
+version = "0.16.0"
+source = "git+https://github.com/storytold/gridcraft?rev=7102429a9a2fd9f6fba8e06238a1cce5807fb1b0#7102429a9a2fd9f6fba8e06238a1cce5807fb1b0"
+dependencies = [
+ "ratex-font",
+ "ratex-layout",
+ "ratex-parser",
+ "ratex-types",
+]
+
+[[package]]
 name = "gridcraft-model"
-version = "0.6.1"
-source = "git+https://github.com/storytold/gridcraft?rev=84acf6293b1dc1fc09837524e035d674eb4d6741#84acf6293b1dc1fc09837524e035d674eb4d6741"
+version = "0.16.0"
+source = "git+https://github.com/storytold/gridcraft?rev=7102429a9a2fd9f6fba8e06238a1cce5807fb1b0#7102429a9a2fd9f6fba8e06238a1cce5807fb1b0"
 dependencies = [
  "gridcraft-core",
  "gridcraft-formula",
+ "gridcraft-math",
  "serde",
+ "serde_json",
  "sha2",
- "thiserror",
+ "thiserror 2.0.19",
 ]
 
 [[package]]
 name = "gridcraft-numfmt"
-version = "0.6.1"
-source = "git+https://github.com/storytold/gridcraft?rev=84acf6293b1dc1fc09837524e035d674eb4d6741#84acf6293b1dc1fc09837524e035d674eb4d6741"
+version = "0.16.0"
+source = "git+https://github.com/storytold/gridcraft?rev=7102429a9a2fd9f6fba8e06238a1cce5807fb1b0#7102429a9a2fd9f6fba8e06238a1cce5807fb1b0"
 dependencies = [
  "gridcraft-core",
 ]
 
 [[package]]
 name = "gridcraft-pdf"
-version = "0.6.1"
-source = "git+https://github.com/storytold/gridcraft?rev=84acf6293b1dc1fc09837524e035d674eb4d6741#84acf6293b1dc1fc09837524e035d674eb4d6741"
+version = "0.16.0"
+source = "git+https://github.com/storytold/gridcraft?rev=7102429a9a2fd9f6fba8e06238a1cce5807fb1b0#7102429a9a2fd9f6fba8e06238a1cce5807fb1b0"
 
 [[package]]
 name = "gridcraft-xlsx"
-version = "0.6.1"
-source = "git+https://github.com/storytold/gridcraft?rev=84acf6293b1dc1fc09837524e035d674eb4d6741#84acf6293b1dc1fc09837524e035d674eb4d6741"
+version = "0.16.0"
+source = "git+https://github.com/storytold/gridcraft?rev=7102429a9a2fd9f6fba8e06238a1cce5807fb1b0#7102429a9a2fd9f6fba8e06238a1cce5807fb1b0"
 dependencies = [
  "aes",
  "gridcraft-core",
  "gridcraft-formula",
+ "gridcraft-math",
  "gridcraft-model",
  "quick-xml 0.41.0",
  "sha1",
  "sha2",
- "thiserror",
+ "thiserror 2.0.19",
  "zip",
 ]
 
@@ -1001,6 +1071,30 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "27f864f10dfb56725ce5ce5472bc52252c8f93a4ab86327122cebf62c5f59a17"
 dependencies = [
  "typenum",
+]
+
+[[package]]
+name = "iana-time-zone"
+version = "0.1.65"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e31bc9ad994ba00e440a8aa5c9ef0ec67d5cb5e5cb0cc7f8b744a35b389cc470"
+dependencies = [
+ "android_system_properties",
+ "core-foundation-sys",
+ "iana-time-zone-haiku",
+ "js-sys",
+ "log",
+ "wasm-bindgen",
+ "windows-core",
+]
+
+[[package]]
+name = "iana-time-zone-haiku"
+version = "0.1.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f31827a206f56af32e590ba56d5d2d085f558508192593743f16b2306495269f"
+dependencies = [
+ "cc",
 ]
 
 [[package]]
@@ -1419,6 +1513,48 @@ dependencies = [
 ]
 
 [[package]]
+name = "phf"
+version = "0.11.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1fd6780a80ae0c52cc120a26a1a42c1ae51b247a253e4e06113d23d2c2edd078"
+dependencies = [
+ "phf_macros",
+ "phf_shared",
+]
+
+[[package]]
+name = "phf_generator"
+version = "0.11.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3c80231409c20246a13fddb31776fb942c38553c51e871f8cbd687a4cfb5843d"
+dependencies = [
+ "phf_shared",
+ "rand",
+]
+
+[[package]]
+name = "phf_macros"
+version = "0.11.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f84ac04429c13a7ff43785d75ad27569f2951ce0ffd30a3321230db2fc727216"
+dependencies = [
+ "phf_generator",
+ "phf_shared",
+ "proc-macro2",
+ "quote",
+ "syn 2.0.119",
+]
+
+[[package]]
+name = "phf_shared"
+version = "0.11.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "67eabc2ef2a60eb7faa00097bd1ffdb5bd28e62bf39990626a582201b7a754e5"
+dependencies = [
+ "siphasher",
+]
+
+[[package]]
 name = "pin-project-lite"
 version = "0.2.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1559,6 +1695,81 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f8dcc9c7d52a811697d2151c701e0d08956f92b0e24136cf4cf27b57a6a0d9bf"
 
 [[package]]
+name = "rand"
+version = "0.8.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e058c7de0b26af77780c769414d6257830bb240f3c38477dbc2c16e5f54d6d4c"
+dependencies = [
+ "rand_core",
+]
+
+[[package]]
+name = "rand_core"
+version = "0.6.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ec0be4795e2f6a28069bec0b5ff3e2ac9bafc99e6a9a7dc3547996c5c816922c"
+
+[[package]]
+name = "ratex-font"
+version = "0.1.14"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6a7b73531dabe934a3e725ed5c90d18dacf43778b7a208381390943a9a8c24db"
+dependencies = [
+ "phf",
+ "ratex-types",
+]
+
+[[package]]
+name = "ratex-layout"
+version = "0.1.14"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1792738e2e36683cd20de742296a5233759565efc8cd03831064a0ccfb1fe0f7"
+dependencies = [
+ "ratex-font",
+ "ratex-parser",
+ "ratex-types",
+ "serde_json",
+]
+
+[[package]]
+name = "ratex-lexer"
+version = "0.1.14"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f704add86d7bf4c4ecc7767f45ab38a44f1bbfa4b49725b2ae53c32e83b8a61e"
+dependencies = [
+ "ratex-types",
+ "serde",
+ "thiserror 1.0.69",
+]
+
+[[package]]
+name = "ratex-parser"
+version = "0.1.14"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "079ec2e7ac6bc76137a6de093a173d1f901139a51318589ab9ce17139c21a6f0"
+dependencies = [
+ "fancy-regex 0.14.0",
+ "ratex-font",
+ "ratex-lexer",
+ "ratex-types",
+ "regex",
+ "regex-lite",
+ "serde",
+ "serde_json",
+ "thiserror 1.0.69",
+ "unicode-normalization",
+]
+
+[[package]]
+name = "ratex-types"
+version = "0.1.14"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0cf0be3d050525f0f7d37af55a443d7648c222ccc617639950e3de1f8e6f9900"
+dependencies = [
+ "serde",
+]
+
+[[package]]
 name = "rayon"
 version = "1.12.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1633,6 +1844,12 @@ dependencies = [
  "memchr",
  "regex-syntax",
 ]
+
+[[package]]
+name = "regex-lite"
+version = "0.1.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cab834c73d247e67f4fae452806d17d3c7501756d98c8808d7c9c7aa7d18f973"
 
 [[package]]
 name = "regex-syntax"
@@ -1767,10 +1984,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "shlex"
+version = "2.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f8fadd59c855ef2080decdef8ff161eb6661b86933c9d82e5ba29dc602a55aba"
+
+[[package]]
 name = "simd-adler32"
 version = "0.3.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3a219298ac11a56ea9a6d2120044824d6f01aeb034955e7af7bc16858527deea"
+
+[[package]]
+name = "siphasher"
+version = "1.0.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "33f4fe9184a62d842c9ef383018f3306d8ba224fd9d836f56d7288308847c256"
 
 [[package]]
 name = "skrifa"
@@ -1862,7 +2091,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "656b45c05d95a5704399aeef6bd0ddec7b2b3531b7c9e900abbf7c4d2190c925"
 dependencies = [
  "bincode",
- "fancy-regex",
+ "fancy-regex 0.16.2",
  "flate2",
  "fnv",
  "once_cell",
@@ -1871,7 +2100,7 @@ dependencies = [
  "serde",
  "serde_derive",
  "serde_json",
- "thiserror",
+ "thiserror 2.0.19",
  "walkdir",
  "yaml-rust",
 ]
@@ -1910,11 +2139,31 @@ dependencies = [
 
 [[package]]
 name = "thiserror"
+version = "1.0.69"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b6aaf5339b578ea85b50e080feb250a3e8ae8cfcdff9a461c9ec2904bc923f52"
+dependencies = [
+ "thiserror-impl 1.0.69",
+]
+
+[[package]]
+name = "thiserror"
 version = "2.0.19"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "09a43598840e33d5b0331f38c5e30d13bb11c11210a4b58f0d9b18a5a5eefcd9"
 dependencies = [
- "thiserror-impl",
+ "thiserror-impl 2.0.19",
+]
+
+[[package]]
+name = "thiserror-impl"
+version = "1.0.69"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4fee6c4efc90059e10f81e6d42c60a18f76588c3d74cb83a0b242a2b6c7504c1"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.119",
 ]
 
 [[package]]
@@ -1981,6 +2230,12 @@ dependencies = [
  "num-conv",
  "time-core",
 ]
+
+[[package]]
+name = "tinyvec"
+version = "1.13.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fd3ca314f692efd6c868f8408f53fe444634a845f96c028b97d35f6a1f79f0ee"
 
 [[package]]
 name = "toml"
@@ -2149,6 +2404,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3b09c83c3c29d37506a3e260c08c03743a6bb66a9cd432c6934ab501a190571f"
 
 [[package]]
+name = "unicode-normalization"
+version = "0.1.26"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "75cd3fb03d5288b3ba9a1ee103ac7e9cbb59f0b03d64f8ddfcc04dd42758a85d"
+dependencies = [
+ "tinyvec",
+]
+
+[[package]]
 name = "unicode-script"
 version = "0.5.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2189,7 +2453,7 @@ dependencies = [
  "peniko",
  "png",
  "smallvec",
- "thiserror",
+ "thiserror 2.0.19",
 ]
 
 [[package]]
@@ -2371,10 +2635,63 @@ dependencies = [
 ]
 
 [[package]]
+name = "windows-core"
+version = "0.62.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b8e83a14d34d0623b51dce9581199302a221863196a1dde71a7663a4c2be9deb"
+dependencies = [
+ "windows-implement",
+ "windows-interface",
+ "windows-link",
+ "windows-result",
+ "windows-strings",
+]
+
+[[package]]
+name = "windows-implement"
+version = "0.60.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "053e2e040ab57b9dc951b72c264860db7eb3b0200ba345b4e4c3b14f67855ddf"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.119",
+]
+
+[[package]]
+name = "windows-interface"
+version = "0.59.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3f316c4a2570ba26bbec722032c4099d8c8bc095efccdc15688708623367e358"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.119",
+]
+
+[[package]]
 name = "windows-link"
 version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f0805222e57f7521d6a62e36fa9163bc891acd422f971defe97d64e70d0a4fe5"
+
+[[package]]
+name = "windows-result"
+version = "0.4.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7781fa89eaf60850ac3d2da7af8e5242a5ea78d1a11c49bf2910bb5a73853eb5"
+dependencies = [
+ "windows-link",
+]
+
+[[package]]
+name = "windows-strings"
+version = "0.5.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7837d08f69c77cf6b07689544538e017c1bfcf57e34b4c0ff58e6c2cd3b37091"
+dependencies = [
+ "windows-link",
+]
 
 [[package]]
 name = "windows-sys"
@@ -2413,7 +2730,7 @@ source = "git+https://github.com/storytold/wordcraft?rev=159b84f54c74e9e82fb3109
 dependencies = [
  "serde",
  "serde_json",
- "thiserror",
+ "thiserror 2.0.19",
  "unicode-segmentation",
  "wordcraft-geom",
 ]
@@ -2432,7 +2749,7 @@ dependencies = [
  "quick-xml 0.41.0",
  "sha1",
  "sha2",
- "thiserror",
+ "thiserror 2.0.19",
  "wordcraft-doc",
  "wordcraft-geom",
  "zeroize",
@@ -2487,7 +2804,7 @@ version = "0.6.1"
 source = "git+https://github.com/storytold/wordcraft?rev=159b84f54c74e9e82fb3109b758ae7dd6f4e3ab0#159b84f54c74e9e82fb3109b758ae7dd6f4e3ab0"
 dependencies = [
  "kurbo",
- "thiserror",
+ "thiserror 2.0.19",
 ]
 
 [[package]]
